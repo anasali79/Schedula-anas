@@ -1,9 +1,13 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
+  Param,
+  ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -16,14 +20,20 @@ import {
   CreateDoctorProfileDto,
   UpdateDoctorProfileDto,
 } from './dto/doctor-profile.dto';
+import { DoctorDiscoveryQueryDto } from './dto/doctor-discovery-query.dto';
 
 @Controller('doctor')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.DOCTOR)
 export class DoctorController {
   constructor(private readonly doctorService: DoctorService) {}
 
+  @Get()
+  findAll(@Query() query: DoctorDiscoveryQueryDto) {
+    return this.doctorService.findAll(query);
+  }
+
   @Post('profile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.DOCTOR)
   createProfile(
     @CurrentUser() user: { id: string },
     @Body() dto: CreateDoctorProfileDto,
@@ -32,11 +42,15 @@ export class DoctorController {
   }
 
   @Get('profile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.DOCTOR)
   getProfile(@CurrentUser() user: { id: string }) {
     return this.doctorService.getProfile(user.id);
   }
 
   @Patch('profile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.DOCTOR)
   updateProfile(
     @CurrentUser() user: { id: string },
     @Body() dto: UpdateDoctorProfileDto,
@@ -45,6 +59,8 @@ export class DoctorController {
   }
 
   @Get('dashboard')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.DOCTOR)
   getDashboard(@CurrentUser() user: { id: string; email: string; role: string }) {
     return {
       message: 'Doctor dashboard',
@@ -59,5 +75,22 @@ export class DoctorController {
         },
       },
     };
+  }
+
+  @Get(':id')
+  findById(
+    @Param(
+      'id',
+      new ParseUUIDPipe({
+        version: '4',
+        exceptionFactory: () =>
+          new BadRequestException(
+            'Invalid doctor ID format. Expected a valid UUID.',
+          ),
+      }),
+    )
+    id: string,
+  ) {
+    return this.doctorService.findById(id);
   }
 }
