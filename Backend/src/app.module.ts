@@ -1,13 +1,13 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { DoctorModule } from './doctor/doctor.module';
 import { PatientModule } from './patient/patient.module';
 import { User } from './users/entities/user.entity';
+import { Doctor } from './doctor/entities/doctor.entity';
+import { Patient } from './patient/entities/patient.entity';
 
 @Module({
   imports: [
@@ -26,8 +26,10 @@ import { User } from './users/entities/user.entity';
         username: config.get<string>('DB_USERNAME'),
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_NAME'),
-        entities: [User],
-        synchronize: true, // auto-creates tables in dev — disable in prod
+        entities: [User, Doctor, Patient],
+        synchronize: false,
+        migrations: [__dirname + '/migrations/*.js'],
+        migrationsRun: true,
         logging: false,
       }),
     }),
@@ -36,7 +38,5 @@ import { User } from './users/entities/user.entity';
     DoctorModule,
     PatientModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
