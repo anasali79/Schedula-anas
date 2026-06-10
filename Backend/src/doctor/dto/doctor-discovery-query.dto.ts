@@ -18,6 +18,9 @@ export class DoctorDiscoveryQueryDto {
   specialization?: string;
 
   @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   search?: string;
 
