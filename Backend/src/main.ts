@@ -28,7 +28,7 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`Schedula Backend running at: http://localhost:${port}/api`);
   console.log(`Auth routes:    /api/auth/signup  |  /api/auth/login  |  /api/auth/logout`);
-  console.log(`Doctor routes:  /api/doctor/profile`);
+  console.log(`Doctor routes:  /api/doctor  |  /api/doctor/:id  |  /api/doctor/profile`);
   console.log(`Patient routes: /api/patient/profile`);
 }
 bootstrap();

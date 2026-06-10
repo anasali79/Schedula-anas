@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -10,6 +11,16 @@ import {
   CreateDoctorProfileDto,
   UpdateDoctorProfileDto,
 } from './dto/doctor-profile.dto';
+import { DoctorDiscoveryQueryDto } from './dto/doctor-discovery-query.dto';
+import {
+  isValidSpecialization,
+  normalizeSpecialization,
+  VALID_SPECIALIZATIONS,
+} from './constants/specializations';
+import {
+  getAvailabilityStatus,
+  isDoctorAvailable,
+} from './utils/doctor-availability.util';
 
 @Injectable()
 export class DoctorService {
@@ -39,6 +50,106 @@ export class DoctorService {
     Object.assign(profile, dto);
     const saved = await this.doctorRepository.save(profile);
     return this.toResponse(saved);
+  }
+
+  async findAll(query: DoctorDiscoveryQueryDto) {
+    if (query.specialization && !isValidSpecialization(query.specialization)) {
+      throw new BadRequestException(
+        `Invalid specialization. Valid values: ${this.getSpecializationList().join(', ')}`,
+      );
+    }
+
+    const qb = this.doctorRepository.createQueryBuilder('doctor');
+
+    if (query.specialization) {
+      qb.andWhere('LOWER(doctor.specialization) = :specialization', {
+        specialization: normalizeSpecialization(query.specialization),
+      });
+    }
+
+    if (query.search?.trim()) {
+      qb.andWhere('doctor.fullName ILIKE :search', {
+        search: `%${query.search.trim()}%`,
+      });
+    }
+
+    qb.orderBy('doctor.fullName', 'ASC');
+
+    const doctors = await qb.getMany();
+    const filtered = this.applyAvailabilityFilter(doctors, query.availability);
+    const total = filtered.length;
+    const page = query.page;
+    const limit = query.limit;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+    const offset = (page - 1) * limit;
+    const paginated = filtered.slice(offset, offset + limit);
+
+    return {
+      message:
+        total === 0
+          ? 'No doctors found matching your criteria'
+          : 'Doctors retrieved successfully',
+      data: paginated.map((doctor) => this.toDiscoverySummary(doctor)),
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    };
+  }
+
+  async findById(id: string) {
+    const doctor = await this.doctorRepository.findOne({ where: { id } });
+    if (!doctor) {
+      throw new NotFoundException(`Doctor with ID ${id} not found`);
+    }
+
+    return {
+      message: 'Doctor details retrieved successfully',
+      data: this.toDiscoveryDetail(doctor),
+    };
+  }
+
+  getSpecializationList() {
+    return [...VALID_SPECIALIZATIONS];
+  }
+
+  private applyAvailabilityFilter(
+    doctors: Doctor[],
+    availability?: boolean,
+  ): Doctor[] {
+    if (availability === undefined) {
+      return doctors;
+    }
+
+    return doctors.filter((doctor) =>
+      availability
+        ? isDoctorAvailable(doctor.consultationHours)
+        : !isDoctorAvailable(doctor.consultationHours),
+    );
+  }
+
+  private toDiscoverySummary(doctor: Doctor) {
+    return {
+      id: doctor.id,
+      fullName: doctor.fullName,
+      specialization: doctor.specialization,
+      experience: doctor.experience,
+      consultationFee: Number(doctor.consultationFee),
+      availabilityStatus: getAvailabilityStatus(doctor.consultationHours),
+    };
+  }
+
+  private toDiscoveryDetail(doctor: Doctor) {
+    return {
+      ...this.toDiscoverySummary(doctor),
+      qualification: doctor.qualification,
+      consultationHours: doctor.consultationHours,
+      profileDetails: doctor.profileDetails,
+      createdAt: doctor.createdAt,
+      updatedAt: doctor.updatedAt,
+    };
   }
 
   private async findByUserIdOrFail(userId: string): Promise<Doctor> {
