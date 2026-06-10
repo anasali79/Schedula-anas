@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
 import { Doctor } from './entities/doctor.entity';
 import {
   CreateDoctorProfileDto,
@@ -67,10 +67,8 @@ export class DoctorService {
       });
     }
 
-    if (query.search?.trim()) {
-      qb.andWhere('doctor.fullName ILIKE :search', {
-        search: `%${query.search.trim()}%`,
-      });
+    if (query.search) {
+      this.applyPartialNameSearch(qb, query.search);
     }
 
     qb.orderBy('doctor.fullName', 'ASC');
@@ -113,6 +111,24 @@ export class DoctorService {
 
   getSpecializationList() {
     return [...VALID_SPECIALIZATIONS];
+  }
+
+  private applyPartialNameSearch(
+    qb: SelectQueryBuilder<Doctor>,
+    search: string,
+  ) {
+    const terms = search.split(/\s+/).filter(Boolean);
+
+    terms.forEach((term, index) => {
+      const param = `searchTerm${index}`;
+      qb.andWhere(`doctor.fullName ILIKE :${param}`, {
+        [param]: `%${this.escapeLikePattern(term)}%`,
+      });
+    });
+  }
+
+  private escapeLikePattern(value: string): string {
+    return value.replace(/[%_\\]/g, '\\$&');
   }
 
   private applyAvailabilityFilter(
