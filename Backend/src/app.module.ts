@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
@@ -8,6 +9,7 @@ import { PatientModule } from './patient/patient.module';
 import { getDatabaseConfig } from './config/database.config';
 
 @Module({
+  controllers: [AppController],
   imports: [
     // Load .env globally
     ConfigModule.forRoot({
