@@ -1,12 +1,14 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { RequestMethod, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.setGlobalPrefix('api');
+  app.setGlobalPrefix('api', {
+    exclude: [{ path: '/', method: RequestMethod.GET }],
+  });
 
   app.use(cookieParser());
 
@@ -25,8 +27,9 @@ async function bootstrap() {
   });
 
   const port = process.env.PORT ?? 3000;
-  await app.listen(port);
-  console.log(`Schedula Backend running at: http://localhost:${port}/api`);
+  await app.listen(port, '0.0.0.0');
+  console.log(`Schedula Backend running on port ${port}`);
+  console.log(`API base URL: /api`);
   console.log(`Auth routes:    /api/auth/signup  |  /api/auth/login  |  /api/auth/logout`);
   console.log(`Doctor routes:  /api/doctor  |  /api/doctor/:id  |  /api/doctor/profile`);
   console.log(`Patient routes: /api/patient/profile`);

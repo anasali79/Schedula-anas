@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: schedula-backend
+    runtime: node
+    rootDir: Backend
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm run start:prod
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: DATABASE_URL
+        sync: false
