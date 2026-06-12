@@ -5,16 +5,22 @@ import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
 import { RecurringAvailability } from '../doctor/entities/recurring-availability.entity';
 import { CustomAvailability } from '../doctor/entities/custom-availability.entity';
+import { Appointment } from '../appointment/entities/appointment.entity';
 
-export function getDatabaseConfig(
-  config: ConfigService,
-): TypeOrmModuleOptions {
+export function getDatabaseConfig(config: ConfigService): TypeOrmModuleOptions {
   const databaseUrl = config.get<string>('DATABASE_URL');
   const isProduction = config.get<string>('NODE_ENV') === 'production';
 
   const shared = {
     type: 'postgres' as const,
-    entities: [User, Doctor, Patient, RecurringAvailability, CustomAvailability],
+    entities: [
+      User,
+      Doctor,
+      Patient,
+      RecurringAvailability,
+      CustomAvailability,
+      Appointment,
+    ],
     synchronize: false,
     migrations: [__dirname + '/../migrations/*.js'],
     migrationsRun: true,

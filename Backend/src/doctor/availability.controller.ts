@@ -10,7 +10,6 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -50,7 +49,9 @@ export class AvailabilityController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.DOCTOR)
   async getDetailedAvailability(@CurrentUser() user: { id: string }) {
-    const details = await this.availabilityService.getDetailedAvailability(user.id);
+    const details = await this.availabilityService.getDetailedAvailability(
+      user.id,
+    );
     return {
       message: 'Detailed availability dashboard retrieved successfully',
       data: details,
@@ -67,7 +68,9 @@ export class AvailabilityController {
       new ParseUUIDPipe({
         version: '4',
         exceptionFactory: () =>
-          new BadRequestException('Invalid slot ID format. Expected a valid UUID.'),
+          new BadRequestException(
+            'Invalid slot ID format. Expected a valid UUID.',
+          ),
       }),
     )
     id: string,
@@ -95,7 +98,9 @@ export class AvailabilityController {
       new ParseUUIDPipe({
         version: '4',
         exceptionFactory: () =>
-          new BadRequestException('Invalid slot ID format. Expected a valid UUID.'),
+          new BadRequestException(
+            'Invalid slot ID format. Expected a valid UUID.',
+          ),
       }),
     )
     id: string,
@@ -150,13 +155,14 @@ export class AvailabilityController {
       new ParseUUIDPipe({
         version: '4',
         exceptionFactory: () =>
-          new BadRequestException('Invalid doctor ID format. Expected a valid UUID.'),
+          new BadRequestException(
+            'Invalid doctor ID format. Expected a valid UUID.',
+          ),
       }),
     )
     doctorId: string,
     @Param('date') date: string,
   ) {
-    console.log('getAvailabilityByDate called with:', { doctorId, date });
     const result = await this.availabilityService.getAvailabilityByDate(
       doctorId,
       date,

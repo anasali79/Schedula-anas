@@ -7,10 +7,11 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { Doctor } from './doctor.entity';
+import { Doctor } from '../../doctor/entities/doctor.entity';
+import { Patient } from '../../patient/entities/patient.entity';
 
-@Entity('custom_availabilities')
-export class CustomAvailability {
+@Entity('appointments')
+export class Appointment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
@@ -21,20 +22,24 @@ export class CustomAvailability {
   @JoinColumn({ name: 'doctorId' })
   doctor: Doctor;
 
-  // Format: "YYYY-MM-DD" e.g. "2026-06-15"
+  @Column({ type: 'uuid' })
+  patientId: string;
+
+  @ManyToOne(() => Patient, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'patientId' })
+  patient: Patient;
+
   @Column({ type: 'date' })
-  date: string;
-
-  // Format: "HH:MM" in 24-hour time
-  @Column({ type: 'varchar', length: 5 })
-  startTime: string;
+  date: string; // YYYY-MM-DD
 
   @Column({ type: 'varchar', length: 5 })
-  endTime: string;
+  startTime: string; // HH:MM
 
-  // Slot duration in minutes (e.g. 10, 15, 30)
-  @Column({ type: 'int', default: 15 })
-  slotDuration: number;
+  @Column({ type: 'varchar', length: 5 })
+  endTime: string; // HH:MM
+
+  @Column({ type: 'varchar', default: 'BOOKED' })
+  status: string; // e.g. BOOKED, CANCELLED
 
   @CreateDateColumn()
   createdAt: Date;

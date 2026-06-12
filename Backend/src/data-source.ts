@@ -5,14 +5,25 @@ import { Doctor } from './doctor/entities/doctor.entity';
 import { Patient } from './patient/entities/patient.entity';
 import { RecurringAvailability } from './doctor/entities/recurring-availability.entity';
 import { CustomAvailability } from './doctor/entities/custom-availability.entity';
+import { Appointment } from './appointment/entities/appointment.entity';
 
 config();
 
 const shared: DataSourceOptions = {
   type: 'postgres',
-  entities: [User, Doctor, Patient, RecurringAvailability, CustomAvailability],
+  entities: [
+    User,
+    Doctor,
+    Patient,
+    RecurringAvailability,
+    CustomAvailability,
+    Appointment,
+  ],
   migrations: ['dist/migrations/*.js'],
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl:
+    process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: false }
+      : false,
 };
 
 export default new DataSource(
