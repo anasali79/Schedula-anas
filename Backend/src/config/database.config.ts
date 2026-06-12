@@ -3,6 +3,8 @@ import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { User } from '../users/entities/user.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
+import { RecurringAvailability } from '../doctor/entities/recurring-availability.entity';
+import { CustomAvailability } from '../doctor/entities/custom-availability.entity';
 
 export function getDatabaseConfig(
   config: ConfigService,
@@ -12,7 +14,7 @@ export function getDatabaseConfig(
 
   const shared = {
     type: 'postgres' as const,
-    entities: [User, Doctor, Patient],
+    entities: [User, Doctor, Patient, RecurringAvailability, CustomAvailability],
     synchronize: false,
     migrations: [__dirname + '/../migrations/*.js'],
     migrationsRun: true,
