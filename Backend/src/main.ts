@@ -20,7 +20,6 @@ async function bootstrap() {
     }),
   );
 
-
   app.enableCors({
     origin: process.env.CLIENT_URL || 'http://localhost:5173',
     credentials: true,
@@ -30,8 +29,12 @@ async function bootstrap() {
   await app.listen(port, '0.0.0.0');
   console.log(`Schedula Backend running on port ${port}`);
   console.log(`API base URL: /api`);
-  console.log(`Auth routes:    /api/auth/signup  |  /api/auth/login  |  /api/auth/logout`);
-  console.log(`Doctor routes:  /api/doctor  |  /api/doctor/:id  |  /api/doctor/profile`);
+  console.log(
+    `Auth routes:    /api/auth/signup  |  /api/auth/login  |  /api/auth/logout`,
+  );
+  console.log(
+    `Doctor routes:  /api/doctor  |  /api/doctor/:id  |  /api/doctor/profile`,
+  );
   console.log(`Patient routes: /api/patient/profile`);
 }
 bootstrap();

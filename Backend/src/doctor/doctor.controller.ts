@@ -21,10 +21,15 @@ import {
   UpdateDoctorProfileDto,
 } from './dto/doctor-profile.dto';
 import { DoctorDiscoveryQueryDto } from './dto/doctor-discovery-query.dto';
+import { AvailabilityService } from './availability.service';
+import { GetSlotsQueryDto } from './dto/availability.dto';
 
 @Controller('doctor')
 export class DoctorController {
-  constructor(private readonly doctorService: DoctorService) {}
+  constructor(
+    private readonly doctorService: DoctorService,
+    private readonly availabilityService: AvailabilityService,
+  ) {}
 
   @Get()
   findAll(@Query() query: DoctorDiscoveryQueryDto) {
@@ -61,7 +66,9 @@ export class DoctorController {
   @Get('dashboard')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.DOCTOR)
-  getDashboard(@CurrentUser() user: { id: string; email: string; role: string }) {
+  getDashboard(
+    @CurrentUser() user: { id: string; email: string; role: string },
+  ) {
     return {
       message: 'Doctor dashboard',
       data: {
@@ -74,6 +81,32 @@ export class DoctorController {
           completedAppointments: 0,
         },
       },
+    };
+  }
+
+  @Get(':doctorId/slots')
+  async getSlots(
+    @Param(
+      'doctorId',
+      new ParseUUIDPipe({
+        version: '4',
+        exceptionFactory: () =>
+          new BadRequestException(
+            'Invalid doctor ID format. Expected a valid UUID.',
+          ),
+      }),
+    )
+    doctorId: string,
+    @Query() query: GetSlotsQueryDto,
+  ) {
+    const slots = await this.availabilityService.getAvailableSlots(
+      doctorId,
+      query.date,
+      query.duration,
+    );
+    return {
+      message: 'Available slots retrieved successfully',
+      data: slots,
     };
   }
 

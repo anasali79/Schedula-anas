@@ -44,6 +44,10 @@ export class RecurringAvailability {
   @Column({ type: 'varchar', length: 5 })
   endTime: string;
 
+  // Slot duration in minutes (e.g. 10, 15, 30)
+  @Column({ type: 'int', default: 15 })
+  slotDuration: number;
+
   @CreateDateColumn()
   createdAt: Date;
 

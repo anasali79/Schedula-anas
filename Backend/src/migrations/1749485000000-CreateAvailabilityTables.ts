@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class CreateAvailabilityTables1749485000000
-  implements MigrationInterface
-{
+export class CreateAvailabilityTables1749485000000 implements MigrationInterface {
   name = 'CreateAvailabilityTables1749485000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -74,8 +72,6 @@ export class CreateAvailabilityTables1749485000000
     );
     await queryRunner.query(`DROP TABLE IF EXISTS "recurring_availabilities"`);
 
-    await queryRunner.query(
-      `DROP TYPE IF EXISTS "public"."day_of_week_enum"`,
-    );
+    await queryRunner.query(`DROP TYPE IF EXISTS "public"."day_of_week_enum"`);
   }
 }

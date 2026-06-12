@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Patch,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -45,7 +38,9 @@ export class PatientController {
   }
 
   @Get('dashboard')
-  getDashboard(@CurrentUser() user: { id: string; email: string; role: string }) {
+  getDashboard(
+    @CurrentUser() user: { id: string; email: string; role: string },
+  ) {
     return {
       message: 'Patient dashboard',
       data: {
