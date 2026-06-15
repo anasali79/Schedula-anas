@@ -434,6 +434,178 @@ Provides dashboard statistics for patient view.
 
 ---
 
+## 5. Appointment Booking & Management APIs
+
+### Appointment Status Enum
+
+| Status | Description |
+|--------|-------------|
+| `BOOKED` | Appointment is active and confirmed |
+| `CANCELLED` | Appointment was cancelled by the patient |
+
+---
+
+### A. Book Appointment
+Patient books an available slot with a doctor. Validates doctor existence, slot availability, future date/time, duplicate booking, and patient role.
+
+- **Route:** `POST /api/appointment`
+- **Access:** Authenticated `PATIENT` only.
+- **Request Body:**
+```json
+{
+  "doctorId": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
+  "date": "2026-06-20",
+  "startTime": "10:00",
+  "endTime": "10:15"
+}
+```
+- **Response (`201 Created`):**
+```json
+{
+  "message": "Appointment booked successfully",
+  "data": {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "date": "2026-06-20",
+    "startTime": "10:00",
+    "endTime": "10:15",
+    "status": "BOOKED",
+    "doctor": {
+      "id": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
+      "fullName": "Dr. John Doe",
+      "specialization": "Cardiologist",
+      "consultationFee": 500
+    },
+    "createdAt": "2026-06-15T14:00:00.000Z",
+    "updatedAt": "2026-06-15T14:00:00.000Z"
+  }
+}
+```
+
+**Validation Error Examples:**
+- `400` — Doctor not found
+- `400` — Cannot book past date/time
+- `400` — Invalid/unavailable slot
+- `409` — Slot already booked
+- `403` — Unauthorized (non-patient role)
+
+---
+
+### B. Patient Appointments View
+Returns all appointments for the authenticated patient with doctor details.
+
+- **Route:** `GET /api/appointment/my`
+- **Access:** Authenticated `PATIENT` only.
+- **Response (`200 OK`):**
+```json
+{
+  "message": "Appointments retrieved successfully",
+  "data": [
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "date": "2026-06-20",
+      "startTime": "10:00",
+      "endTime": "10:15",
+      "status": "BOOKED",
+      "doctor": {
+        "id": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
+        "fullName": "Dr. John Doe",
+        "specialization": "Cardiologist",
+        "consultationFee": 500
+      },
+      "createdAt": "2026-06-15T14:00:00.000Z",
+      "updatedAt": "2026-06-15T14:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### C. Cancel Appointment
+Patient cancels their own appointment. Cannot cancel others' appointments, already-cancelled, or past appointments.
+
+- **Route:** `PATCH /api/appointment/:id/cancel`
+- **Access:** Authenticated `PATIENT` only (appointment owner).
+- **Response (`200 OK`):**
+```json
+{
+  "message": "Appointment cancelled successfully",
+  "data": {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "date": "2026-06-20",
+    "startTime": "10:00",
+    "endTime": "10:15",
+    "status": "CANCELLED",
+    "doctor": {
+      "id": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
+      "fullName": "Dr. John Doe",
+      "specialization": "Cardiologist",
+      "consultationFee": 500
+    },
+    "createdAt": "2026-06-15T14:00:00.000Z",
+    "updatedAt": "2026-06-15T14:30:00.000Z"
+  }
+}
+```
+
+**Validation Error Examples:**
+- `404` — Appointment not found
+- `403` — Not the appointment owner
+- `400` — Already cancelled
+- `400` — Cannot cancel past appointment
+
+---
+
+### D. Doctor Appointments View
+Returns all appointments booked with the authenticated doctor, with patient details.
+
+- **Route:** `GET /api/doctor/appointments`
+- **Access:** Authenticated `DOCTOR` only.
+- **Response (`200 OK`):**
+```json
+{
+  "message": "Appointments retrieved successfully",
+  "data": [
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "date": "2026-06-20",
+      "startTime": "10:00",
+      "endTime": "10:15",
+      "status": "BOOKED",
+      "patient": {
+        "id": "fa15f013-1cf0-4bb5-8664-cd25a2e57305",
+        "fullName": "Jane Smith",
+        "age": 30,
+        "gender": "FEMALE",
+        "phone": "+1987654321"
+      },
+      "createdAt": "2026-06-15T14:00:00.000Z",
+      "updatedAt": "2026-06-15T14:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### Edge Cases Handled
+
+| Edge Case | HTTP Status | Error Message |
+|-----------|-------------|---------------|
+| Doctor not found | `404` | Doctor with ID {id} not found |
+| Patient profile missing | `404` | Patient profile not found |
+| Invalid slot | `400` | Slot is not available for this doctor |
+| Slot already booked | `409` | This slot is already booked |
+| Past date booking | `400` | Cannot book appointment for a past date |
+| Past time booking | `400` | Cannot book appointment for a past time slot |
+| Invalid appointment ID | `400` | Invalid appointment ID format |
+| Unauthorized access | `403` | Access denied |
+| Already cancelled | `400` | This appointment is already cancelled |
+| Cancel past appointment | `400` | Cannot cancel a past appointment |
+| No appointments found | `200` | No appointments found (empty array) |
+
+---
+
 ## 📜 Scripts Reference
 
 | Command | Description |
