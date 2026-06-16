@@ -19,7 +19,9 @@ export class PatientService {
   ) {}
 
   async createProfile(userId: string, dto: CreatePatientProfileDto) {
-    const existing = await this.patientRepository.findOne({ where: { userId } });
+    const existing = await this.patientRepository.findOne({
+      where: { userId },
+    });
     if (existing) {
       throw new ConflictException('Patient profile already exists');
     }

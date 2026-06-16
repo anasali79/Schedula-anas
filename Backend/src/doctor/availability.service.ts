@@ -12,6 +12,7 @@ import {
 } from './entities/recurring-availability.entity';
 import { CustomAvailability } from './entities/custom-availability.entity';
 import { Doctor } from './entities/doctor.entity';
+import { Appointment } from '../appointment/entities/appointment.entity';
 import {
   CreateRecurringAvailabilityDto,
   UpdateRecurringAvailabilityDto,
@@ -22,6 +23,13 @@ import {
 function toMinutes(time: string): number {
   const [h, m] = time.split(':').map(Number);
   return h * 60 + m;
+}
+
+// Helper: Convert minutes back to "HH:MM" format
+function toTimeString(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
 }
 
 // Helper: Check if two time ranges overlap
@@ -66,6 +74,9 @@ export class AvailabilityService {
 
     @InjectRepository(Doctor)
     private readonly doctorRepo: Repository<Doctor>,
+
+    @InjectRepository(Appointment)
+    private readonly appointmentRepo: Repository<Appointment>,
   ) {}
 
   // ─── Recurring Availability ──────────────────────────────────────────────────
@@ -101,6 +112,7 @@ export class AvailabilityService {
       dayOfWeek: dto.dayOfWeek,
       startTime: dto.startTime,
       endTime: dto.endTime,
+      slotDuration: dto.slotDuration ?? 15,
     });
 
     return this.recurringRepo.save(slot);
@@ -122,7 +134,13 @@ export class AvailabilityService {
       date: string;
       dayOfWeek: DayOfWeek;
       source: 'custom' | 'recurring' | 'none';
-      slots: Array<{ id: string; startTime: string; endTime: string }>;
+      slots: Array<{
+        id: string;
+        startTime: string;
+        endTime: string;
+        slotDuration: number;
+        dividedSlots: Array<{ startTime: string; endTime: string }>;
+      }>;
     }>;
   }> {
     const doctor = await this.findDoctorByUserIdOrFail(userId);
@@ -141,7 +159,8 @@ export class AvailabilityService {
     const endDateStr = maxDate.toISOString().split('T')[0];
 
     // 2. Fetch all custom overrides within these 30 days
-    const customOverrides = await this.customRepo.createQueryBuilder('ca')
+    const customOverrides = await this.customRepo
+      .createQueryBuilder('ca')
       .where('ca.doctorId = :doctorId', { doctorId: doctor.id })
       .andWhere('ca.date >= :startDate', { startDate: startDateStr })
       .andWhere('ca.date <= :endDate', { endDate: endDateStr })
@@ -153,7 +172,13 @@ export class AvailabilityService {
     const customMap: Record<
       string,
       {
-        slots: Array<{ id: string; startTime: string; endTime: string }>;
+        slots: Array<{
+          id: string;
+          startTime: string;
+          endTime: string;
+          slotDuration: number;
+          dividedSlots: Array<{ startTime: string; endTime: string }>;
+        }>;
         hasBlockout: boolean;
       }
     > = {};
@@ -165,10 +190,17 @@ export class AvailabilityService {
       if (override.startTime === '00:00' && override.endTime === '00:00') {
         customMap[override.date].hasBlockout = true;
       } else {
+        const dur = override.slotDuration ?? 15;
         customMap[override.date].slots.push({
           id: override.id,
           startTime: override.startTime,
           endTime: override.endTime,
+          slotDuration: dur,
+          dividedSlots: this.divideIntoSlots(
+            override.startTime,
+            override.endTime,
+            dur,
+          ),
         });
       }
     }
@@ -178,7 +210,13 @@ export class AvailabilityService {
       date: string;
       dayOfWeek: DayOfWeek;
       source: 'custom' | 'recurring' | 'none';
-      slots: Array<{ id: string; startTime: string; endTime: string }>;
+      slots: Array<{
+        id: string;
+        startTime: string;
+        endTime: string;
+        slotDuration: number;
+        dividedSlots: Array<{ startTime: string; endTime: string }>;
+      }>;
     }> = [];
 
     for (let i = 0; i < 30; i++) {
@@ -197,17 +235,24 @@ export class AvailabilityService {
         });
       } else {
         // Fall back to recurring availability for this day of week
-        const dateRecurringSlots = recurring.filter(r => r.dayOfWeek === dayOfWeek);
+        const dateRecurringSlots = recurring.filter(
+          (r) => r.dayOfWeek === dayOfWeek,
+        );
         if (dateRecurringSlots.length > 0) {
           generatedSchedule.push({
             date: dateStr,
             dayOfWeek,
             source: 'recurring',
-            slots: dateRecurringSlots.map(s => ({
-              id: s.id,
-              startTime: s.startTime,
-              endTime: s.endTime,
-            })),
+            slots: dateRecurringSlots.map((s) => {
+              const dur = s.slotDuration ?? 15;
+              return {
+                id: s.id,
+                startTime: s.startTime,
+                endTime: s.endTime,
+                slotDuration: dur,
+                dividedSlots: this.divideIntoSlots(s.startTime, s.endTime, dur),
+              };
+            }),
           });
         } else {
           generatedSchedule.push({
@@ -255,11 +300,13 @@ export class AvailabilityService {
       );
       if (match) {
         await this.customRepo.remove(match);
-        
+
         // If that was the only custom slot, and we removed it, we need to make sure
         // it doesn't just fallback to recurring slots! So we insert a blockout slot.
         // We do this if there are no other custom slots left for this date.
-        const remainingCustomCount = customSlots.filter(s => s.id !== match.id).length;
+        const remainingCustomCount = customSlots.filter(
+          (s) => s.id !== match.id,
+        ).length;
         if (remainingCustomCount === 0) {
           const blockout = this.customRepo.create({
             doctorId: doctor.id,
@@ -270,7 +317,9 @@ export class AvailabilityService {
           await this.customRepo.save(blockout);
         }
       } else {
-        throw new NotFoundException(`Slot ${startTime}-${endTime} not found on custom overrides for ${date}`);
+        throw new NotFoundException(
+          `Slot ${startTime}-${endTime} not found on custom overrides for ${date}`,
+        );
       }
     } else {
       // Case B: No custom overrides exist yet.
@@ -297,6 +346,7 @@ export class AvailabilityService {
             date,
             startTime: s.startTime,
             endTime: s.endTime,
+            slotDuration: s.slotDuration ?? 15,
           }),
         );
         await this.customRepo.save(newCustoms);
@@ -353,6 +403,7 @@ export class AvailabilityService {
       dayOfWeek: updatedDay,
       startTime: updatedStart,
       endTime: updatedEnd,
+      ...(dto.slotDuration !== undefined && { slotDuration: dto.slotDuration }),
     });
 
     return this.recurringRepo.save(slot);
@@ -400,6 +451,7 @@ export class AvailabilityService {
       date: dto.date,
       startTime: dto.startTime,
       endTime: dto.endTime,
+      slotDuration: dto.slotDuration ?? 15,
     });
 
     return this.customRepo.save(slot);
@@ -412,7 +464,12 @@ export class AvailabilityService {
     date: string;
     dayOfWeek: DayOfWeek;
     source: 'custom' | 'recurring' | 'none';
-    slots: Array<{ startTime: string; endTime: string }>;
+    slots: Array<{
+      startTime: string;
+      endTime: string;
+      slotDuration: number;
+      dividedSlots: Array<{ startTime: string; endTime: string }>;
+    }>;
   }> {
     const cleanDate = date.trim().replace(/\/$/, '');
 
@@ -441,10 +498,15 @@ export class AvailabilityService {
         date: cleanDate,
         dayOfWeek,
         source: 'custom',
-        slots: customSlots.map((s) => ({
-          startTime: s.startTime,
-          endTime: s.endTime,
-        })),
+        slots: customSlots.map((s) => {
+          const dur = s.slotDuration ?? 15;
+          return {
+            startTime: s.startTime,
+            endTime: s.endTime,
+            slotDuration: dur,
+            dividedSlots: this.divideIntoSlots(s.startTime, s.endTime, dur),
+          };
+        }),
       };
     }
 
@@ -459,10 +521,15 @@ export class AvailabilityService {
         date: cleanDate,
         dayOfWeek,
         source: 'recurring',
-        slots: recurringSlots.map((s) => ({
-          startTime: s.startTime,
-          endTime: s.endTime,
-        })),
+        slots: recurringSlots.map((s) => {
+          const dur = s.slotDuration ?? 15;
+          return {
+            startTime: s.startTime,
+            endTime: s.endTime,
+            slotDuration: dur,
+            dividedSlots: this.divideIntoSlots(s.startTime, s.endTime, dur),
+          };
+        }),
       };
     }
 
@@ -474,7 +541,29 @@ export class AvailabilityService {
     };
   }
 
-  // ─── Private Helpers ─────────────────────────────────────────────────────────
+  /**
+   * Divides a time range into smaller slots based on the given duration.
+   * E.g. divideIntoSlots('09:00', '10:00', 30) → [{startTime:'09:00',endTime:'09:30'},{startTime:'09:30',endTime:'10:00'}]
+   */
+  private divideIntoSlots(
+    startTime: string,
+    endTime: string,
+    durationMinutes: number,
+  ): Array<{ startTime: string; endTime: string }> {
+    const slots: Array<{ startTime: string; endTime: string }> = [];
+    let startMin = toMinutes(startTime);
+    const endMin = toMinutes(endTime);
+
+    while (startMin + durationMinutes <= endMin) {
+      slots.push({
+        startTime: toTimeString(startMin),
+        endTime: toTimeString(startMin + durationMinutes),
+      });
+      startMin += durationMinutes;
+    }
+
+    return slots;
+  }
 
   private async findDoctorByUserIdOrFail(userId: string): Promise<Doctor> {
     const doctor = await this.doctorRepo.findOne({ where: { userId } });
@@ -514,9 +603,7 @@ export class AvailabilityService {
     today.setHours(0, 0, 0, 0);
     const inputDate = new Date(date + 'T00:00:00');
     if (inputDate < today) {
-      throw new BadRequestException(
-        `date (${date}) cannot be in the past`,
-      );
+      throw new BadRequestException(`date (${date}) cannot be in the past`);
     }
   }
 
@@ -546,5 +633,149 @@ export class AvailabilityService {
         );
       }
     }
+  }
+
+  async getAvailableSlots(
+    doctorId: string,
+    dateStr: string,
+    durationInput?: number,
+  ): Promise<Array<{ startTime: string; endTime: string }>> {
+    const cleanDate = dateStr.trim();
+
+    // 1. Validate date format YYYY-MM-DD
+    if (!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(cleanDate)) {
+      throw new BadRequestException(
+        'Invalid date format. Expected YYYY-MM-DD.',
+      );
+    }
+
+    const parsed = Date.parse(`${cleanDate}T00:00:00`);
+    if (isNaN(parsed)) {
+      throw new BadRequestException('Invalid date');
+    }
+
+    // 2. Validate duration
+    const duration = durationInput ?? 15;
+    if (duration <= 0 || !Number.isInteger(duration)) {
+      throw new BadRequestException('Invalid duration');
+    }
+
+    // 3. Validate Doctor exists
+    const doctor = await this.doctorRepo.findOne({ where: { id: doctorId } });
+    if (!doctor) {
+      throw new NotFoundException(`Doctor with ID ${doctorId} not found`);
+    }
+
+    // 4. Validate if the date is in the past
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
+      .toString()
+      .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+
+    if (cleanDate < todayStr) {
+      throw new BadRequestException('Date cannot be in the past');
+    }
+
+    const dayOfWeek = getDayOfWeekFromDate(cleanDate);
+
+    // 5. Get doctor's raw availability intervals
+    let intervals: Array<{ startTime: string; endTime: string; slotDuration: number }> = [];
+
+    // 5a. Check custom overrides first
+    const customSlots = await this.customRepo.find({
+      where: { doctorId, date: cleanDate },
+      order: { startTime: 'ASC' },
+    });
+
+    if (customSlots.length > 0) {
+      // Filter out blockout slots (00:00 - 00:00)
+      intervals = customSlots
+        .filter((s) => !(s.startTime === '00:00' && s.endTime === '00:00'))
+        .map((s) => ({
+          startTime: s.startTime,
+          endTime: s.endTime,
+          slotDuration: s.slotDuration ?? 15,
+        }));
+    } else {
+      // 5b. Fall back to recurring availability
+      const recurringSlots = await this.recurringRepo.find({
+        where: { doctorId, dayOfWeek },
+        order: { startTime: 'ASC' },
+      });
+
+      if (recurringSlots.length > 0) {
+        intervals = recurringSlots.map((s) => ({
+          startTime: s.startTime,
+          endTime: s.endTime,
+          slotDuration: s.slotDuration ?? 15,
+        }));
+      }
+    }
+
+    // If there are no availability intervals (either none set or blocked out by custom override)
+    if (intervals.length === 0) {
+      throw new NotFoundException(
+        `No availability found for this doctor on the selected date`,
+      );
+    }
+
+    // 6. Generate candidate slots
+    const candidateSlots: Array<{ startTime: string; endTime: string }> = [];
+    for (const interval of intervals) {
+      const slotDur = durationInput ?? interval.slotDuration;
+      let startMin = toMinutes(interval.startTime);
+      const endMin = toMinutes(interval.endTime);
+
+      while (startMin + slotDur <= endMin) {
+        candidateSlots.push({
+          startTime: toTimeString(startMin),
+          endTime: toTimeString(startMin + slotDur),
+        });
+        startMin += slotDur;
+      }
+    }
+
+    // 7. Filter out past slots (if selected date is today)
+    let futureSlots = candidateSlots;
+    if (cleanDate === todayStr) {
+      const currentHour = now.getHours();
+      const currentMinute = now.getMinutes();
+      const currentTimeInMinutes = currentHour * 60 + currentMinute;
+
+      futureSlots = candidateSlots.filter(
+        (slot) => toMinutes(slot.startTime) > currentTimeInMinutes,
+      );
+    }
+
+    // 8. Filter out booked slots
+    const appointments = await this.appointmentRepo.find({
+      where: { doctorId, date: cleanDate },
+    });
+
+    const bookedAppointments = appointments.filter(
+      (app) => app.status !== 'CANCELLED',
+    );
+
+    const availableSlots = futureSlots.filter((slot) => {
+      const slotStart = toMinutes(slot.startTime);
+      const slotEnd = toMinutes(slot.endTime);
+
+      const isBooked = bookedAppointments.some((app) => {
+        const appStart = toMinutes(app.startTime);
+        const appEnd = toMinutes(app.endTime);
+        return slotStart < appEnd && appStart < slotEnd;
+      });
+
+      return !isBooked;
+    });
+
+    // 9. If no slots are left, throw NotFoundException
+    if (availableSlots.length === 0) {
+      throw new NotFoundException(
+        `No slots available for this doctor on the selected date`,
+      );
+    }
+
+    return availableSlots;
   }
 }

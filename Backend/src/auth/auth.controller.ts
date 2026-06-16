@@ -17,7 +17,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) { }
+  constructor(private readonly authService: AuthService) {}
 
   @Post('signup')
   async signup(@Body() signupDto: SignupDto, @Res() res: Response) {
@@ -61,7 +61,9 @@ export class AuthController {
   logout(@Res() res: Response) {
     // Clear the token cookie
     res.clearCookie('token');
-    return res.status(HttpStatus.OK).json({ message: 'Logged out successfully' });
+    return res
+      .status(HttpStatus.OK)
+      .json({ message: 'Logged out successfully' });
   }
 
   @Get('me')
