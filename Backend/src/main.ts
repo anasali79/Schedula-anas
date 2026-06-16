@@ -30,11 +30,14 @@ async function bootstrap() {
   console.log(`Schedula Backend running on port ${port}`);
   console.log(`API base URL: /api`);
   console.log(
-    `Auth routes:    /api/auth/signup  |  /api/auth/login  |  /api/auth/logout`,
+    `Auth routes:        /api/auth/signup  |  /api/auth/login  |  /api/auth/logout`,
   );
   console.log(
-    `Doctor routes:  /api/doctor  |  /api/doctor/:id  |  /api/doctor/profile`,
+    `Doctor routes:      /api/doctor  |  /api/doctor/:id  |  /api/doctor/profile`,
   );
-  console.log(`Patient routes: /api/patient/profile`);
+  console.log(`Patient routes:     /api/patient/profile`);
+  console.log(
+    `Appointment routes: /api/appointment  |  /api/appointment/my  |  /api/appointment/:id/cancel  |  /api/doctor/appointments`,
+  );
 }
 bootstrap();

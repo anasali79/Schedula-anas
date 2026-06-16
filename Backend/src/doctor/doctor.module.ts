@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DoctorController } from './doctor.controller';
 import { DoctorService } from './doctor.service';
@@ -8,6 +8,7 @@ import { CustomAvailability } from './entities/custom-availability.entity';
 import { AvailabilityService } from './availability.service';
 import { AvailabilityController } from './availability.controller';
 import { Appointment } from '../appointment/entities/appointment.entity';
+import { AppointmentModule } from '../appointment/appointment.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { Appointment } from '../appointment/entities/appointment.entity';
       CustomAvailability,
       Appointment,
     ]),
+    forwardRef(() => AppointmentModule),
   ],
   controllers: [AvailabilityController, DoctorController],
   providers: [DoctorService, AvailabilityService],

@@ -10,6 +10,12 @@ import {
 import { Type } from 'class-transformer';
 import { DayOfWeek } from '../entities/recurring-availability.entity';
 
+export enum SlotStatus {
+  AVAILABLE = 'available',
+  BOOKED = 'booked',
+  CANCEL_AND_AVAILABLE = 'cancel and available for booking',
+}
+
 const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE_REGEX = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 

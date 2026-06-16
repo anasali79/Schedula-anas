@@ -9,12 +9,16 @@ import {
   CreatePatientProfileDto,
   UpdatePatientProfileDto,
 } from './dto/patient-profile.dto';
+import { AppointmentService } from '../appointment/appointment.service';
 
 @Controller('patient')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.PATIENT)
 export class PatientController {
-  constructor(private readonly patientService: PatientService) {}
+  constructor(
+    private readonly patientService: PatientService,
+    private readonly appointmentService: AppointmentService,
+  ) {}
 
   @Post('profile')
   createProfile(
@@ -38,20 +42,17 @@ export class PatientController {
   }
 
   @Get('dashboard')
-  getDashboard(
+  async getDashboard(
     @CurrentUser() user: { id: string; email: string; role: string },
   ) {
+    const stats = await this.appointmentService.getPatientDashboardStats(user.id);
     return {
       message: 'Patient dashboard',
       data: {
         patientId: user.id,
         email: user.email,
         role: user.role,
-        stats: {
-          upcomingAppointments: 0,
-          pastAppointments: 0,
-          prescriptions: 0,
-        },
+        stats,
       },
     };
   }

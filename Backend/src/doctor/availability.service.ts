@@ -17,6 +17,7 @@ import {
   CreateRecurringAvailabilityDto,
   UpdateRecurringAvailabilityDto,
   CreateCustomAvailabilityDto,
+  SlotStatus,
 } from './dto/availability.dto';
 
 // Helper: Convert "HH:MM" to total minutes for easy comparison
@@ -139,7 +140,7 @@ export class AvailabilityService {
         startTime: string;
         endTime: string;
         slotDuration: number;
-        dividedSlots: Array<{ startTime: string; endTime: string }>;
+        dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
       }>;
     }>;
   }> {
@@ -157,6 +158,20 @@ export class AvailabilityService {
     const maxDate = new Date();
     maxDate.setDate(today.getDate() + 29);
     const endDateStr = maxDate.toISOString().split('T')[0];
+
+    // Fetch all appointments in this 30-day range for status mapping
+    const appointments = await this.appointmentRepo
+      .createQueryBuilder('app')
+      .where('app.doctorId = :doctorId', { doctorId: doctor.id })
+      .andWhere('app.date >= :start', { start: startDateStr })
+      .andWhere('app.date <= :end', { end: endDateStr })
+      .getMany();
+
+    const appsByDate: Record<string, Appointment[]> = {};
+    for (const app of appointments) {
+      if (!appsByDate[app.date]) appsByDate[app.date] = [];
+      appsByDate[app.date].push(app);
+    }
 
     // 2. Fetch all custom overrides within these 30 days
     const customOverrides = await this.customRepo
@@ -177,7 +192,7 @@ export class AvailabilityService {
           startTime: string;
           endTime: string;
           slotDuration: number;
-          dividedSlots: Array<{ startTime: string; endTime: string }>;
+          dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
         }>;
         hasBlockout: boolean;
       }
@@ -196,10 +211,10 @@ export class AvailabilityService {
           startTime: override.startTime,
           endTime: override.endTime,
           slotDuration: dur,
-          dividedSlots: this.divideIntoSlots(
-            override.startTime,
-            override.endTime,
-            dur,
+          dividedSlots: this.assignStatusToDividedSlots(
+            this.divideIntoSlots(override.startTime, override.endTime, dur),
+            appsByDate[override.date] || [],
+            override.date
           ),
         });
       }
@@ -215,7 +230,7 @@ export class AvailabilityService {
         startTime: string;
         endTime: string;
         slotDuration: number;
-        dividedSlots: Array<{ startTime: string; endTime: string }>;
+        dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
       }>;
     }> = [];
 
@@ -250,7 +265,11 @@ export class AvailabilityService {
                 startTime: s.startTime,
                 endTime: s.endTime,
                 slotDuration: dur,
-                dividedSlots: this.divideIntoSlots(s.startTime, s.endTime, dur),
+                dividedSlots: this.assignStatusToDividedSlots(
+                  this.divideIntoSlots(s.startTime, s.endTime, dur),
+                  appsByDate[dateStr] || [],
+                  dateStr
+                ),
               };
             }),
           });
@@ -468,7 +487,7 @@ export class AvailabilityService {
       startTime: string;
       endTime: string;
       slotDuration: number;
-      dividedSlots: Array<{ startTime: string; endTime: string }>;
+      dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
     }>;
   }> {
     const cleanDate = date.trim().replace(/\/$/, '');
@@ -487,6 +506,10 @@ export class AvailabilityService {
 
     const dayOfWeek = getDayOfWeekFromDate(cleanDate);
 
+    const appointments = await this.appointmentRepo.find({
+      where: { doctorId, date: cleanDate },
+    });
+
     // 1. Check custom overrides first (highest priority)
     const customSlots = await this.customRepo.find({
       where: { doctorId, date: cleanDate },
@@ -504,7 +527,11 @@ export class AvailabilityService {
             startTime: s.startTime,
             endTime: s.endTime,
             slotDuration: dur,
-            dividedSlots: this.divideIntoSlots(s.startTime, s.endTime, dur),
+            dividedSlots: this.assignStatusToDividedSlots(
+              this.divideIntoSlots(s.startTime, s.endTime, dur),
+              appointments,
+              cleanDate
+            ),
           };
         }),
       };
@@ -527,7 +554,11 @@ export class AvailabilityService {
             startTime: s.startTime,
             endTime: s.endTime,
             slotDuration: dur,
-            dividedSlots: this.divideIntoSlots(s.startTime, s.endTime, dur),
+            dividedSlots: this.assignStatusToDividedSlots(
+              this.divideIntoSlots(s.startTime, s.endTime, dur),
+              appointments,
+              cleanDate
+            ),
           };
         }),
       };
@@ -563,6 +594,37 @@ export class AvailabilityService {
     }
 
     return slots;
+  }
+
+  private assignStatusToDividedSlots(
+    dividedSlots: Array<{ startTime: string; endTime: string }>,
+    appointments: Appointment[],
+    dateStr: string,
+  ): Array<{ startTime: string; endTime: string; status: SlotStatus }> {
+    return dividedSlots.map((slot) => {
+      const slotStart = toMinutes(slot.startTime);
+      const slotEnd = toMinutes(slot.endTime);
+
+      const overlapping = appointments.filter((app) => {
+        const appStart = toMinutes(app.startTime);
+        const appEnd = toMinutes(app.endTime);
+        return slotStart < appEnd && appStart < slotEnd;
+      });
+
+      const bookedApp = overlapping.find(a => a.status === 'BOOKED');
+      if (bookedApp) return { ...slot, status: SlotStatus.BOOKED };
+
+      const cancelledApp = overlapping.find(a => a.status === 'CANCELLED');
+      if (cancelledApp) {
+        const slotStartDate = new Date(`${dateStr}T${slot.startTime}:00`);
+        const cancelDate = cancelledApp.updatedAt;
+        const diffMinutes = (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
+        if (diffMinutes >= 5) {
+          return { ...slot, status: SlotStatus.CANCEL_AND_AVAILABLE };
+        }
+      }
+      return { ...slot, status: SlotStatus.AVAILABLE };
+    });
   }
 
   private async findDoctorByUserIdOrFail(userId: string): Promise<Doctor> {
@@ -639,7 +701,7 @@ export class AvailabilityService {
     doctorId: string,
     dateStr: string,
     durationInput?: number,
-  ): Promise<Array<{ startTime: string; endTime: string }>> {
+  ): Promise<Array<{ startTime: string; endTime: string; status: SlotStatus }>> {
     const cleanDate = dateStr.trim();
 
     // 1. Validate date format YYYY-MM-DD
@@ -747,35 +809,52 @@ export class AvailabilityService {
       );
     }
 
-    // 8. Filter out booked slots
+    // 8. Assign status to each slot based on appointments
     const appointments = await this.appointmentRepo.find({
       where: { doctorId, date: cleanDate },
     });
 
-    const bookedAppointments = appointments.filter(
-      (app) => app.status !== 'CANCELLED',
-    );
-
-    const availableSlots = futureSlots.filter((slot) => {
+    const resultSlots = futureSlots.map((slot) => {
       const slotStart = toMinutes(slot.startTime);
       const slotEnd = toMinutes(slot.endTime);
 
-      const isBooked = bookedAppointments.some((app) => {
+      const overlappingAppointments = appointments.filter((app) => {
         const appStart = toMinutes(app.startTime);
         const appEnd = toMinutes(app.endTime);
         return slotStart < appEnd && appStart < slotEnd;
       });
 
-      return !isBooked;
+      const bookedApp = overlappingAppointments.find(a => a.status === 'BOOKED');
+      if (bookedApp) {
+        return { ...slot, status: SlotStatus.BOOKED };
+      }
+
+      const cancelledApp = overlappingAppointments.find(a => a.status === 'CANCELLED');
+      if (cancelledApp) {
+        // Construct the slot's true start date-time
+        const slotStartDate = new Date(`${cleanDate}T${slot.startTime}:00`);
+        const cancelDate = cancelledApp.updatedAt;
+        
+        // Calculate difference in minutes
+        const diffMinutes = (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
+
+        if (diffMinutes >= 5) {
+          return { ...slot, status: SlotStatus.CANCEL_AND_AVAILABLE };
+        } else {
+          return { ...slot, status: SlotStatus.AVAILABLE };
+        }
+      }
+
+      return { ...slot, status: SlotStatus.AVAILABLE };
     });
 
-    // 9. If no slots are left, throw NotFoundException
-    if (availableSlots.length === 0) {
+    // 9. If no slots generated, throw NotFoundException
+    if (resultSlots.length === 0) {
       throw new NotFoundException(
-        `No slots available for this doctor on the selected date`,
+        `No slots found for this doctor on the selected date`,
       );
     }
 
-    return availableSlots;
+    return resultSlots;
   }
 }

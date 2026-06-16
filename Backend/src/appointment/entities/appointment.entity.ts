@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { Doctor } from '../../doctor/entities/doctor.entity';
 import { Patient } from '../../patient/entities/patient.entity';
+import { AppointmentStatus } from '../../common/enums/appointment-status.enum';
 
 @Entity('appointments')
 export class Appointment {
@@ -18,14 +19,14 @@ export class Appointment {
   @Column({ type: 'uuid' })
   doctorId: string;
 
-  @ManyToOne(() => Doctor, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Doctor, { onDelete: 'CASCADE', eager: true })
   @JoinColumn({ name: 'doctorId' })
   doctor: Doctor;
 
   @Column({ type: 'uuid' })
   patientId: string;
 
-  @ManyToOne(() => Patient, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Patient, { onDelete: 'CASCADE', eager: true })
   @JoinColumn({ name: 'patientId' })
   patient: Patient;
 
@@ -38,8 +39,11 @@ export class Appointment {
   @Column({ type: 'varchar', length: 5 })
   endTime: string; // HH:MM
 
-  @Column({ type: 'varchar', default: 'BOOKED' })
-  status: string; // e.g. BOOKED, CANCELLED
+  @Column({ type: 'varchar', default: AppointmentStatus.BOOKED })
+  status: AppointmentStatus;
+
+  @Column({ type: 'int', default: 0 })
+  tokenNumber: number;
 
   @CreateDateColumn()
   createdAt: Date;

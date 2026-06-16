@@ -9,6 +9,8 @@ import {
   Post,
   Query,
   UseGuards,
+  forwardRef,
+  Inject,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -23,12 +25,15 @@ import {
 import { DoctorDiscoveryQueryDto } from './dto/doctor-discovery-query.dto';
 import { AvailabilityService } from './availability.service';
 import { GetSlotsQueryDto } from './dto/availability.dto';
+import { AppointmentService } from '../appointment/appointment.service';
 
 @Controller('doctor')
 export class DoctorController {
   constructor(
     private readonly doctorService: DoctorService,
     private readonly availabilityService: AvailabilityService,
+    @Inject(forwardRef(() => AppointmentService))
+    private readonly appointmentService: AppointmentService,
   ) {}
 
   @Get()
@@ -82,6 +87,13 @@ export class DoctorController {
         },
       },
     };
+  }
+
+  @Get('appointments')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.DOCTOR)
+  getDoctorAppointments(@CurrentUser() user: { id: string }) {
+    return this.appointmentService.getDoctorAppointments(user.id);
   }
 
   @Get(':doctorId/slots')
