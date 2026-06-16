@@ -55,7 +55,7 @@ export class AppointmentController {
         version: '4',
         exceptionFactory: () =>
           new BadRequestException(
-            'Invalid appointment ID format. Expected a valid UUID.',
+            'Invalid appointment ID format',
           ),
       }),
     )

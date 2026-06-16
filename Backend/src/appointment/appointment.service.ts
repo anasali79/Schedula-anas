@@ -15,6 +15,7 @@ import { Patient } from '../patient/entities/patient.entity';
 import { BookAppointmentDto } from './dto/book-appointment.dto';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 import { AvailabilityService } from '../doctor/availability.service';
+import { SlotStatus } from '../doctor/dto/availability.dto';
 
 @Injectable()
 export class AppointmentService {
@@ -72,7 +73,7 @@ export class AppointmentService {
 
     if (existingBooking) {
       throw new ConflictException(
-        `This slot (${dto.startTime} - ${dto.endTime}) on ${dto.date} is already booked`,
+        'This slot is already booked',
       );
     }
 
@@ -301,7 +302,7 @@ export class AppointmentService {
         date,
       );
 
-      const validStatuses = ['available', 'cancel and available for booking'];
+      const validStatuses: string[] = [SlotStatus.AVAILABLE, SlotStatus.CANCEL_AND_AVAILABLE];
 
       const slotExists = availableSlots.some(
         (slot) => slot.startTime === startTime && slot.endTime === endTime && validStatuses.includes(slot.status),
@@ -309,7 +310,7 @@ export class AppointmentService {
 
       if (!slotExists) {
         throw new BadRequestException(
-          `Slot ${startTime} - ${endTime} is not available for this doctor on ${date}`,
+          'Slot is not available for this doctor',
         );
       }
     } catch (error) {

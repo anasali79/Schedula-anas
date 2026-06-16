@@ -17,6 +17,7 @@ import {
   CreateRecurringAvailabilityDto,
   UpdateRecurringAvailabilityDto,
   CreateCustomAvailabilityDto,
+  SlotStatus,
 } from './dto/availability.dto';
 
 // Helper: Convert "HH:MM" to total minutes for easy comparison
@@ -139,7 +140,7 @@ export class AvailabilityService {
         startTime: string;
         endTime: string;
         slotDuration: number;
-        dividedSlots: Array<{ startTime: string; endTime: string; status: string }>;
+        dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
       }>;
     }>;
   }> {
@@ -191,7 +192,7 @@ export class AvailabilityService {
           startTime: string;
           endTime: string;
           slotDuration: number;
-          dividedSlots: Array<{ startTime: string; endTime: string; status: string }>;
+          dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
         }>;
         hasBlockout: boolean;
       }
@@ -229,7 +230,7 @@ export class AvailabilityService {
         startTime: string;
         endTime: string;
         slotDuration: number;
-        dividedSlots: Array<{ startTime: string; endTime: string; status: string }>;
+        dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
       }>;
     }> = [];
 
@@ -486,7 +487,7 @@ export class AvailabilityService {
       startTime: string;
       endTime: string;
       slotDuration: number;
-      dividedSlots: Array<{ startTime: string; endTime: string; status: string }>;
+      dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
     }>;
   }> {
     const cleanDate = date.trim().replace(/\/$/, '');
@@ -599,7 +600,7 @@ export class AvailabilityService {
     dividedSlots: Array<{ startTime: string; endTime: string }>,
     appointments: Appointment[],
     dateStr: string,
-  ): Array<{ startTime: string; endTime: string; status: string }> {
+  ): Array<{ startTime: string; endTime: string; status: SlotStatus }> {
     return dividedSlots.map((slot) => {
       const slotStart = toMinutes(slot.startTime);
       const slotEnd = toMinutes(slot.endTime);
@@ -611,7 +612,7 @@ export class AvailabilityService {
       });
 
       const bookedApp = overlapping.find(a => a.status === 'BOOKED');
-      if (bookedApp) return { ...slot, status: 'booked' };
+      if (bookedApp) return { ...slot, status: SlotStatus.BOOKED };
 
       const cancelledApp = overlapping.find(a => a.status === 'CANCELLED');
       if (cancelledApp) {
@@ -619,10 +620,10 @@ export class AvailabilityService {
         const cancelDate = cancelledApp.updatedAt;
         const diffMinutes = (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
         if (diffMinutes >= 5) {
-          return { ...slot, status: 'cancel and available for booking' };
+          return { ...slot, status: SlotStatus.CANCEL_AND_AVAILABLE };
         }
       }
-      return { ...slot, status: 'available' };
+      return { ...slot, status: SlotStatus.AVAILABLE };
     });
   }
 
@@ -700,7 +701,7 @@ export class AvailabilityService {
     doctorId: string,
     dateStr: string,
     durationInput?: number,
-  ): Promise<Array<{ startTime: string; endTime: string; status: string }>> {
+  ): Promise<Array<{ startTime: string; endTime: string; status: SlotStatus }>> {
     const cleanDate = dateStr.trim();
 
     // 1. Validate date format YYYY-MM-DD
@@ -825,7 +826,7 @@ export class AvailabilityService {
 
       const bookedApp = overlappingAppointments.find(a => a.status === 'BOOKED');
       if (bookedApp) {
-        return { ...slot, status: 'booked' };
+        return { ...slot, status: SlotStatus.BOOKED };
       }
 
       const cancelledApp = overlappingAppointments.find(a => a.status === 'CANCELLED');
@@ -838,13 +839,13 @@ export class AvailabilityService {
         const diffMinutes = (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
 
         if (diffMinutes >= 5) {
-          return { ...slot, status: 'cancel and available for booking' };
+          return { ...slot, status: SlotStatus.CANCEL_AND_AVAILABLE };
         } else {
-          return { ...slot, status: 'available' };
+          return { ...slot, status: SlotStatus.AVAILABLE };
         }
       }
 
-      return { ...slot, status: 'available' };
+      return { ...slot, status: SlotStatus.AVAILABLE };
     });
 
     // 9. If no slots generated, throw NotFoundException
