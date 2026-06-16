@@ -45,7 +45,9 @@ export class PatientController {
   async getDashboard(
     @CurrentUser() user: { id: string; email: string; role: string },
   ) {
-    const stats = await this.appointmentService.getPatientDashboardStats(user.id);
+    const stats = await this.appointmentService.getPatientDashboardStats(
+      user.id,
+    );
     return {
       message: 'Patient dashboard',
       data: {

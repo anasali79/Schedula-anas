@@ -54,14 +54,11 @@ export class AppointmentController {
       new ParseUUIDPipe({
         version: '4',
         exceptionFactory: () =>
-          new BadRequestException(
-            'Invalid appointment ID format',
-          ),
+          new BadRequestException('Invalid appointment ID format'),
       }),
     )
     id: string,
   ) {
     return this.appointmentService.cancelAppointment(user.id, id);
   }
-
 }

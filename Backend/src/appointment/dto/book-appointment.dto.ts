@@ -1,4 +1,10 @@
-import { IsNotEmpty, IsString, IsUUID, Matches } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+} from 'class-validator';
 
 export class BookAppointmentDto {
   @IsNotEmpty({ message: 'doctorId is required' })
