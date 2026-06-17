@@ -9,6 +9,8 @@ import {
   MinLength,
 } from 'class-validator';
 
+import { PartialType } from '@nestjs/mapped-types';
+
 export class CreatePatientProfileDto {
   @IsString()
   @IsNotEmpty()
@@ -36,33 +38,6 @@ export class CreatePatientProfileDto {
   basicHealthInfo?: string;
 }
 
-export class UpdatePatientProfileDto {
-  @IsString()
-  @IsOptional()
-  @IsNotEmpty()
-  fullName?: string;
+export class UpdatePatientProfileDto extends PartialType(CreatePatientProfileDto) {}
 
-  @IsInt()
-  @IsOptional()
-  @Min(1)
-  @Max(150)
-  age?: number;
 
-  @IsString()
-  @IsOptional()
-  @IsIn(['MALE', 'FEMALE', 'OTHER'])
-  gender?: string;
-
-  @IsString()
-  @IsOptional()
-  @MinLength(10)
-  phone?: string;
-
-  @IsString()
-  @IsOptional()
-  address?: string;
-
-  @IsString()
-  @IsOptional()
-  basicHealthInfo?: string;
-}

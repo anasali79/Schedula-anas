@@ -1,4 +1,8 @@
-import { ConsultationHours } from '../entities/doctor.entity';
+export interface ConsultationSlot {
+  start: string;
+  end: string;
+}
+export type ConsultationHours = Record<string, ConsultationSlot[]>;
 
 export type AvailabilityStatus = 'available' | 'unavailable';
 

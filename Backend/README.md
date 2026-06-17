@@ -353,7 +353,44 @@ Removes a specific range on a given date. If no slots are left for that date, a 
 
 ---
 
-### E. Get Patient Bookable Slots (The Core Feature)
+### E. Set Unavailable (Auto-Reschedule)
+Marks a specific slot or an entire day as unavailable for a doctor. Automatically reschedules any affected appointments to the next available slot within 30 days and notifies via response.
+
+- **Route:** `POST /api/doctor/availability/unavailable`
+- **Access:** Authenticated `DOCTOR` only.
+- **Request Body:**
+```json
+{
+  "date": "2026-06-22",
+  "startTime": "09:00",
+  "endTime": "12:00"
+}
+```
+*`startTime` and `endTime` are optional. If omitted, the entire day is blocked.*
+
+- **Response (`200 OK`):**
+```json
+{
+  "message": "Slot 09:00-12:00 on 2026-06-22 is now marked as unavailable. Affected appointments have been rescheduled.",
+  "rescheduledAppointments": [
+    {
+      "appointmentId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "patientId": "fa15f013-1cf0-4bb5-8664-cd25a2e57305",
+      "previousDate": "2026-06-22",
+      "previousStartTime": "09:00",
+      "previousEndTime": "09:15",
+      "newDate": "2026-06-22",
+      "newStartTime": "13:00",
+      "newEndTime": "13:15",
+      "tokenNumber": 2
+    }
+  ]
+}
+```
+
+---
+
+### F. Get Patient Bookable Slots (The Core Feature)
 Allows patients to fetch all bookable slots. Filters out past times and overlapping appointments.
 
 - **Route:** `GET /api/doctor/:doctorId/slots`
@@ -469,6 +506,7 @@ Patient books an available slot with a doctor. Validates doctor existence, slot 
     "startTime": "10:00",
     "endTime": "10:15",
     "status": "BOOKED",
+    "tokenNumber": 1,
     "doctor": {
       "id": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
       "fullName": "Dr. John Doe",
@@ -480,6 +518,8 @@ Patient books an available slot with a doctor. Validates doctor existence, slot 
   }
 }
 ```
+
+*Note: The `tokenNumber` field is only returned if the appointment was booked on a `WAVE` scheduling slot. It is omitted for `STREAM` slots.*
 
 **Validation Error Examples:**
 - `400` — Doctor not found
@@ -506,6 +546,7 @@ Returns all appointments for the authenticated patient with doctor details.
       "startTime": "10:00",
       "endTime": "10:15",
       "status": "BOOKED",
+      "tokenNumber": 1,
       "doctor": {
         "id": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
         "fullName": "Dr. John Doe",
@@ -536,6 +577,7 @@ Patient cancels their own appointment. Cannot cancel others' appointments, alrea
     "startTime": "10:00",
     "endTime": "10:15",
     "status": "CANCELLED",
+    "tokenNumber": 1,
     "doctor": {
       "id": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
       "fullName": "Dr. John Doe",
@@ -556,7 +598,54 @@ Patient cancels their own appointment. Cannot cancel others' appointments, alrea
 
 ---
 
-### D. Doctor Appointments View
+### D. Reschedule Appointment
+Patient reschedules their own appointment to a new date and time. Must be done at least 30 minutes prior to the original appointment. Automatically cancels the old slot and reserves the new one.
+
+- **Route:** `PATCH /api/appointment/:id/reschedule`
+- **Access:** Authenticated `PATIENT` only (appointment owner).
+- **Request Body:**
+```json
+{
+  "date": "2026-06-21",
+  "startTime": "11:00",
+  "endTime": "11:15"
+}
+```
+- **Response (`200 OK`):**
+```json
+{
+  "message": "Appointment rescheduled successfully",
+  "data": {
+    "previousAppointment": {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "date": "2026-06-20",
+      "startTime": "10:00",
+      "endTime": "10:15",
+      "status": "RESCHEDULED"
+    },
+    "newAppointment": {
+      "id": "b2c3d4e5-f678-90ab-cdef-123456789012",
+      "date": "2026-06-21",
+      "startTime": "11:00",
+      "endTime": "11:15",
+      "status": "BOOKED",
+      "tokenNumber": 1,
+      "doctor": {
+        "id": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
+        "fullName": "Dr. John Doe",
+        "specialization": "Cardiologist",
+        "consultationFee": 500
+      },
+      "createdAt": "2026-06-15T15:00:00.000Z",
+      "updatedAt": "2026-06-15T15:00:00.000Z"
+    }
+  }
+}
+```
+
+---
+
+### E. Doctor Appointments View
 Returns all appointments booked with the authenticated doctor, with patient details.
 
 - **Route:** `GET /api/doctor/appointments`
@@ -572,6 +661,7 @@ Returns all appointments booked with the authenticated doctor, with patient deta
       "startTime": "10:00",
       "endTime": "10:15",
       "status": "BOOKED",
+      "tokenNumber": 1,
       "patient": {
         "id": "fa15f013-1cf0-4bb5-8664-cd25a2e57305",
         "fullName": "Jane Smith",

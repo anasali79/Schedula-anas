@@ -23,6 +23,7 @@ import {
   UpdateRecurringAvailabilityDto,
   CreateCustomAvailabilityDto,
   CancelOccurrenceDto,
+  SetUnavailableDto,
 } from './dto/availability.dto';
 
 @Controller('doctor/availability')
@@ -144,6 +145,28 @@ export class AvailabilityController {
     );
     return {
       message: `Slot ${dto.startTime}-${dto.endTime} on ${dto.date} has been cancelled successfully`,
+    };
+  }
+
+  @Post('unavailable')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.DOCTOR)
+  @HttpCode(HttpStatus.OK)
+  async setUnavailable(
+    @CurrentUser() user: { id: string },
+    @Body() dto: SetUnavailableDto,
+  ) {
+    const rescheduled = await this.availabilityService.setUnavailable(
+      user.id,
+      dto.date,
+      dto.startTime,
+      dto.endTime,
+    );
+    return {
+      message: dto.startTime && dto.endTime
+        ? `Slot ${dto.startTime}-${dto.endTime} on ${dto.date} is now marked as unavailable. Affected appointments have been rescheduled.`
+        : `Doctor is now marked as unavailable for the entire day of ${dto.date}. Affected appointments have been rescheduled.`,
+      rescheduledAppointments: rescheduled,
     };
   }
 
