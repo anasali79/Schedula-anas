@@ -9,6 +9,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { DayOfWeek } from '../entities/recurring-availability.entity';
+import { SchedulingType } from '../../common/enums/scheduling-type.enum';
 
 export enum SlotStatus {
   AVAILABLE = 'available',
@@ -41,11 +42,32 @@ export class CreateRecurringAvailabilityDto {
   })
   endTime: string;
 
+  // Scheduling type: STREAM or WAVE (defaults to STREAM)
+  @IsOptional()
+  @IsEnum(SchedulingType, {
+    message: `schedulingType must be one of: ${Object.values(SchedulingType).join(', ')}`,
+  })
+  schedulingType?: SchedulingType;
+
+  // ─── STREAM fields ───
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(1)
+  @Min(1, { message: 'slotDuration must be at least 1 minute' })
   slotDuration?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0, { message: 'bufferTime cannot be negative' })
+  bufferTime?: number;
+
+  // ─── WAVE fields ───
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1, { message: 'maxPatients must be at least 1' })
+  maxPatients?: number;
 }
 
 export class UpdateRecurringAvailabilityDto {
@@ -70,10 +92,28 @@ export class UpdateRecurringAvailabilityDto {
   endTime?: string;
 
   @IsOptional()
+  @IsEnum(SchedulingType, {
+    message: `schedulingType must be one of: ${Object.values(SchedulingType).join(', ')}`,
+  })
+  schedulingType?: SchedulingType;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   slotDuration?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  bufferTime?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  maxPatients?: number;
 }
 
 // ─── Custom Availability DTOs ─────────────────────────────────────────────────
@@ -101,10 +141,28 @@ export class CreateCustomAvailabilityDto {
   endTime: string;
 
   @IsOptional()
+  @IsEnum(SchedulingType, {
+    message: `schedulingType must be one of: ${Object.values(SchedulingType).join(', ')}`,
+  })
+  schedulingType?: SchedulingType;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   slotDuration?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  bufferTime?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  maxPatients?: number;
 }
 
 export class GetAvailabilityByDateDto {

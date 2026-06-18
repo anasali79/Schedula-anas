@@ -8,6 +8,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Doctor } from './doctor.entity';
+import { SchedulingType } from '../../common/enums/scheduling-type.enum';
 
 export enum DayOfWeek {
   MONDAY = 'MONDAY',
@@ -44,9 +45,21 @@ export class RecurringAvailability {
   @Column({ type: 'varchar', length: 5 })
   endTime: string;
 
-  // Slot duration in minutes (e.g. 10, 15, 30)
+  // Slot duration in minutes (e.g. 10, 15, 30) — used for STREAM scheduling
   @Column({ type: 'int', default: 15 })
   slotDuration: number;
+
+  // Scheduling type: STREAM (exact time slots) or WAVE (token-based window)
+  @Column({ type: 'varchar', length: 10, default: SchedulingType.STREAM })
+  schedulingType: SchedulingType;
+
+  // Buffer time in minutes between slots — used for STREAM scheduling (optional)
+  @Column({ type: 'int', default: 0 })
+  bufferTime: number;
+
+  // Maximum number of patients per wave — used for WAVE scheduling
+  @Column({ type: 'int', default: 0 })
+  maxPatients: number;
 
   @CreateDateColumn()
   createdAt: Date;

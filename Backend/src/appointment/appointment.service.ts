@@ -49,20 +49,24 @@ export class AppointmentService {
       where: { id: dto.doctorId },
     });
     if (!doctor) {
-      throw new NotFoundException(
-        `Doctor with ID ${dto.doctorId} not found`,
-      );
+      throw new NotFoundException(`Doctor with ID ${dto.doctorId} not found`);
     }
 
     // 3. Validate date is not in the past
     this.validateFutureDateTime(dto.date, dto.startTime);
 
     // 4. Validate the slot exists in doctor's availability
-    await this.validateSlotExists(dto.doctorId, dto.date, dto.startTime, dto.endTime);
+    const slotInfo = await this.validateSlotExists(
+      dto.doctorId,
+      dto.date,
+      dto.startTime,
+      dto.endTime,
+    );
 
-    // 5. Check if the slot is already booked (duplicate booking prevention)
-    const existingBooking = await this.appointmentRepo.findOne({
+    // 4.5 Prevent patient from booking the same slot twice
+    const patientHasBooking = await this.appointmentRepo.findOne({
       where: {
+        patientId: patient.id,
         doctorId: dto.doctorId,
         date: dto.date,
         startTime: dto.startTime,
@@ -71,22 +75,64 @@ export class AppointmentService {
       },
     });
 
-    if (existingBooking) {
-      throw new ConflictException(
-        'This slot is already booked',
-      );
+    if (patientHasBooking) {
+      throw new ConflictException('You have already booked this slot');
+    }
+
+    // 5. Check if the slot is already booked (duplicate booking prevention)
+    if (slotInfo.schedulingType === 'WAVE') {
+      const bookedCount = slotInfo.bookedCount ?? 0;
+      const maxPatients = slotInfo.maxPatients ?? 0;
+      if (bookedCount >= maxPatients) {
+        throw new ConflictException('This slot is already booked');
+      }
+    } else {
+      const existingBooking = await this.appointmentRepo.findOne({
+        where: {
+          doctorId: dto.doctorId,
+          date: dto.date,
+          startTime: dto.startTime,
+          endTime: dto.endTime,
+          status: AppointmentStatus.BOOKED,
+        },
+      });
+
+      if (existingBooking) {
+        throw new ConflictException('This slot is already booked');
+      }
     }
 
     // 5.5 Calculate token number
-    const maxTokenResult = await this.appointmentRepo
-      .createQueryBuilder('appointment')
-      .select('MAX(appointment.tokenNumber)', 'max')
-      .where('appointment.doctorId = :doctorId', { doctorId: dto.doctorId })
-      .andWhere('appointment.date = :date', { date: dto.date })
-      .getRawOne();
-      
-    const currentMax = maxTokenResult.max ? parseInt(maxTokenResult.max, 10) : 0;
-    const tokenNumber = currentMax + 1;
+    let tokenNumber = 1;
+    if (slotInfo.schedulingType === 'WAVE') {
+      const maxTokenResult = await this.appointmentRepo
+        .createQueryBuilder('appointment')
+        .select('MAX(appointment.tokenNumber)', 'max')
+        .where('appointment.doctorId = :doctorId', { doctorId: dto.doctorId })
+        .andWhere('appointment.date = :date', { date: dto.date })
+        .andWhere('appointment.startTime = :startTime', {
+          startTime: dto.startTime,
+        })
+        .andWhere('appointment.endTime = :endTime', { endTime: dto.endTime })
+        .getRawOne();
+
+      const currentMax = maxTokenResult.max
+        ? parseInt(maxTokenResult.max, 10)
+        : 0;
+      tokenNumber = currentMax + 1;
+    } else {
+      const maxTokenResult = await this.appointmentRepo
+        .createQueryBuilder('appointment')
+        .select('MAX(appointment.tokenNumber)', 'max')
+        .where('appointment.doctorId = :doctorId', { doctorId: dto.doctorId })
+        .andWhere('appointment.date = :date', { date: dto.date })
+        .getRawOne();
+
+      const currentMax = maxTokenResult.max
+        ? parseInt(maxTokenResult.max, 10)
+        : 0;
+      tokenNumber = currentMax + 1;
+    }
 
     // 6. Create the appointment
     const appointment = this.appointmentRepo.create({
@@ -173,9 +219,7 @@ export class AppointmentService {
 
     // Cannot cancel already cancelled appointment
     if (appointment.status === AppointmentStatus.CANCELLED) {
-      throw new BadRequestException(
-        'This appointment is already cancelled',
-      );
+      throw new BadRequestException('This appointment is already cancelled');
     }
 
     // Cannot cancel past appointments
@@ -225,7 +269,9 @@ export class AppointmentService {
   async getPatientDashboardStats(userId: string) {
     const patient = await this.patientRepo.findOne({ where: { userId } });
     if (!patient) {
-      throw new NotFoundException('Patient profile not found. Please create your profile first.');
+      throw new NotFoundException(
+        'Patient profile not found. Please create your profile first.',
+      );
     }
 
     const now = new Date();
@@ -235,7 +281,9 @@ export class AppointmentService {
       .createQueryBuilder('appointment')
       .where('appointment.patientId = :patientId', { patientId: patient.id })
       .andWhere('appointment.date >= :today', { today: todayStr })
-      .andWhere('appointment.status = :status', { status: AppointmentStatus.BOOKED })
+      .andWhere('appointment.status = :status', {
+        status: AppointmentStatus.BOOKED,
+      })
       .getCount();
 
     const pastAppointments = await this.appointmentRepo
@@ -265,9 +313,7 @@ export class AppointmentService {
       .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
 
     if (date < todayStr) {
-      throw new BadRequestException(
-        'Cannot book appointment for a past date',
-      );
+      throw new BadRequestException('Cannot book appointment for a past date');
     }
 
     // If booking for today, check if the startTime hasn't already passed
@@ -294,7 +340,7 @@ export class AppointmentService {
     date: string,
     startTime: string,
     endTime: string,
-  ): Promise<void> {
+  ): Promise<any> {
     try {
       // Get available slots (this already filters out booked ones)
       const availableSlots = await this.availabilityService.getAvailableSlots(
@@ -302,17 +348,22 @@ export class AppointmentService {
         date,
       );
 
-      const validStatuses: string[] = [SlotStatus.AVAILABLE, SlotStatus.CANCEL_AND_AVAILABLE];
+      const validStatuses: string[] = [
+        SlotStatus.AVAILABLE,
+        SlotStatus.CANCEL_AND_AVAILABLE,
+      ];
 
-      const slotExists = availableSlots.some(
-        (slot) => slot.startTime === startTime && slot.endTime === endTime && validStatuses.includes(slot.status),
+      const foundSlot = availableSlots.find(
+        (slot) =>
+          slot.startTime === startTime &&
+          slot.endTime === endTime &&
+          validStatuses.includes(slot.status),
       );
 
-      if (!slotExists) {
-        throw new BadRequestException(
-          'Slot is not available for this doctor',
-        );
+      if (!foundSlot) {
+        throw new BadRequestException('Slot is not available for this doctor');
       }
+      return foundSlot;
     } catch (error) {
       if (error instanceof BadRequestException) {
         throw error;
@@ -337,9 +388,7 @@ export class AppointmentService {
       .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
 
     if (date < todayStr) {
-      throw new BadRequestException(
-        'Cannot cancel a past appointment',
-      );
+      throw new BadRequestException('Cannot cancel a past appointment');
     }
 
     if (date === todayStr) {
@@ -348,9 +397,7 @@ export class AppointmentService {
       const slotMinutes = h * 60 + m;
 
       if (slotMinutes <= currentMinutes) {
-        throw new BadRequestException(
-          'Cannot cancel a past appointment',
-        );
+        throw new BadRequestException('Cannot cancel a past appointment');
       }
     }
   }

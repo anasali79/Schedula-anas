@@ -19,6 +19,7 @@ import {
   CreateCustomAvailabilityDto,
   SlotStatus,
 } from './dto/availability.dto';
+import { SchedulingType } from '../common/enums/scheduling-type.enum';
 
 // Helper: Convert "HH:MM" to total minutes for easy comparison
 function toMinutes(time: string): number {
@@ -87,6 +88,10 @@ export class AvailabilityService {
     dto: CreateRecurringAvailabilityDto,
   ): Promise<RecurringAvailability> {
     const doctor = await this.findDoctorByUserIdOrFail(userId);
+    const schedulingType = dto.schedulingType ?? SchedulingType.STREAM;
+
+    // Validate scheduling configuration
+    this.validateSchedulingConfig(schedulingType, dto);
 
     // Validate: endTime must be after startTime
     this.validateTimeRange(dto.startTime, dto.endTime);
@@ -114,6 +119,9 @@ export class AvailabilityService {
       startTime: dto.startTime,
       endTime: dto.endTime,
       slotDuration: dto.slotDuration ?? 15,
+      schedulingType,
+      bufferTime: dto.bufferTime ?? 0,
+      maxPatients: dto.maxPatients ?? 0,
     });
 
     return this.recurringRepo.save(slot);
@@ -140,7 +148,17 @@ export class AvailabilityService {
         startTime: string;
         endTime: string;
         slotDuration: number;
-        dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
+        schedulingType?: SchedulingType;
+        bufferTime?: number;
+        maxPatients?: number;
+        dividedSlots: Array<{
+          startTime: string;
+          endTime: string;
+          status: SlotStatus;
+          maxPatients?: number;
+          bookedCount?: number;
+          availableCount?: number;
+        }>;
       }>;
     }>;
   }> {
@@ -192,7 +210,17 @@ export class AvailabilityService {
           startTime: string;
           endTime: string;
           slotDuration: number;
-          dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
+          schedulingType: SchedulingType;
+          bufferTime: number;
+          maxPatients: number;
+          dividedSlots: Array<{
+            startTime: string;
+            endTime: string;
+            status: SlotStatus;
+            maxPatients?: number;
+            bookedCount?: number;
+            availableCount?: number;
+          }>;
         }>;
         hasBlockout: boolean;
       }
@@ -206,17 +234,67 @@ export class AvailabilityService {
         customMap[override.date].hasBlockout = true;
       } else {
         const dur = override.slotDuration ?? 15;
-        customMap[override.date].slots.push({
+        const sType = override.schedulingType ?? SchedulingType.STREAM;
+
+        let dividedSlots: Array<{
+          startTime: string;
+          endTime: string;
+          status: SlotStatus;
+          maxPatients?: number;
+          bookedCount?: number;
+          availableCount?: number;
+        }> = [];
+
+        if (sType === SchedulingType.WAVE) {
+          const bookedCount = (appsByDate[override.date] || []).filter(
+            (app) =>
+              app.startTime === override.startTime &&
+              app.endTime === override.endTime &&
+              app.status === 'BOOKED',
+          ).length;
+          const maxPatients = override.maxPatients || 0;
+          const availableCount = Math.max(0, maxPatients - bookedCount);
+          const status =
+            availableCount > 0 ? SlotStatus.AVAILABLE : SlotStatus.BOOKED;
+          dividedSlots = [
+            {
+              startTime: override.startTime,
+              endTime: override.endTime,
+              status,
+              maxPatients,
+              bookedCount,
+              availableCount,
+            },
+          ];
+        } else {
+          dividedSlots = this.assignStatusToDividedSlots(
+            this.divideIntoSlots(
+              override.startTime,
+              override.endTime,
+              dur,
+              override.bufferTime,
+            ),
+            appsByDate[override.date] || [],
+            override.date,
+          );
+        }
+
+        const slotObj: any = {
           id: override.id,
           startTime: override.startTime,
           endTime: override.endTime,
-          slotDuration: dur,
-          dividedSlots: this.assignStatusToDividedSlots(
-            this.divideIntoSlots(override.startTime, override.endTime, dur),
-            appsByDate[override.date] || [],
-            override.date
-          ),
-        });
+          schedulingType: sType,
+          dividedSlots,
+        };
+
+        if (sType === SchedulingType.STREAM) {
+          slotObj.slotDuration = dur;
+          slotObj.bufferTime = override.bufferTime ?? 0;
+        } else {
+          slotObj.maxPatients = override.maxPatients ?? 0;
+        }
+
+        customMap[override.date].slots.push(slotObj);
       }
     }
 
@@ -230,7 +308,11 @@ export class AvailabilityService {
         startTime: string;
         endTime: string;
         slotDuration: number;
-        dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
+        dividedSlots: Array<{
+          startTime: string;
+          endTime: string;
+          status: SlotStatus;
+        }>;
       }>;
     }> = [];
 
@@ -260,17 +342,67 @@ export class AvailabilityService {
             source: 'recurring',
             slots: dateRecurringSlots.map((s) => {
               const dur = s.slotDuration ?? 15;
-              return {
+              const sType = s.schedulingType ?? SchedulingType.STREAM;
+
+              let dividedSlots: Array<{
+                startTime: string;
+                endTime: string;
+                status: SlotStatus;
+                maxPatients?: number;
+                bookedCount?: number;
+                availableCount?: number;
+              }> = [];
+
+              if (sType === SchedulingType.WAVE) {
+                const bookedCount = (appsByDate[dateStr] || []).filter(
+                  (app) =>
+                    app.startTime === s.startTime &&
+                    app.endTime === s.endTime &&
+                    app.status === 'BOOKED',
+                ).length;
+                const maxPatients = s.maxPatients || 0;
+                const availableCount = Math.max(0, maxPatients - bookedCount);
+                const status =
+                  availableCount > 0 ? SlotStatus.AVAILABLE : SlotStatus.BOOKED;
+                dividedSlots = [
+                  {
+                    startTime: s.startTime,
+                    endTime: s.endTime,
+                    status,
+                    maxPatients,
+                    bookedCount,
+                    availableCount,
+                  },
+                ];
+              } else {
+                dividedSlots = this.assignStatusToDividedSlots(
+                  this.divideIntoSlots(
+                    s.startTime,
+                    s.endTime,
+                    dur,
+                    s.bufferTime,
+                  ),
+                  appsByDate[dateStr] || [],
+                  dateStr,
+                );
+              }
+
+              const slotObj: any = {
                 id: s.id,
                 startTime: s.startTime,
                 endTime: s.endTime,
-                slotDuration: dur,
-                dividedSlots: this.assignStatusToDividedSlots(
-                  this.divideIntoSlots(s.startTime, s.endTime, dur),
-                  appsByDate[dateStr] || [],
-                  dateStr
-                ),
+                schedulingType: sType,
+                dividedSlots,
               };
+
+              if (sType === SchedulingType.STREAM) {
+                slotObj.slotDuration = dur;
+                slotObj.bufferTime = s.bufferTime ?? 0;
+              } else {
+                slotObj.maxPatients = s.maxPatients ?? 0;
+              }
+
+              return slotObj;
             }),
           });
         } else {
@@ -465,12 +597,18 @@ export class AvailabilityService {
       );
     }
 
+    const customSchedulingType = dto.schedulingType ?? SchedulingType.STREAM;
+    this.validateSchedulingConfig(customSchedulingType, dto);
+
     const slot = this.customRepo.create({
       doctorId: doctor.id,
       date: dto.date,
       startTime: dto.startTime,
       endTime: dto.endTime,
       slotDuration: dto.slotDuration ?? 15,
+      schedulingType: customSchedulingType,
+      bufferTime: dto.bufferTime ?? 0,
+      maxPatients: dto.maxPatients ?? 0,
     });
 
     return this.customRepo.save(slot);
@@ -487,7 +625,11 @@ export class AvailabilityService {
       startTime: string;
       endTime: string;
       slotDuration: number;
-      dividedSlots: Array<{ startTime: string; endTime: string; status: SlotStatus }>;
+      dividedSlots: Array<{
+        startTime: string;
+        endTime: string;
+        status: SlotStatus;
+      }>;
     }>;
   }> {
     const cleanDate = date.trim().replace(/\/$/, '');
@@ -523,16 +665,61 @@ export class AvailabilityService {
         source: 'custom',
         slots: customSlots.map((s) => {
           const dur = s.slotDuration ?? 15;
-          return {
+          const sType = s.schedulingType ?? SchedulingType.STREAM;
+
+          let dividedSlots: Array<{
+            startTime: string;
+            endTime: string;
+            status: SlotStatus;
+            maxPatients?: number;
+            bookedCount?: number;
+            availableCount?: number;
+          }> = [];
+
+          if (sType === SchedulingType.WAVE) {
+            const bookedCount = appointments.filter(
+              (app) =>
+                app.startTime === s.startTime &&
+                app.endTime === s.endTime &&
+                app.status === 'BOOKED',
+            ).length;
+            const maxPatients = s.maxPatients || 0;
+            const availableCount = Math.max(0, maxPatients - bookedCount);
+            const status =
+              availableCount > 0 ? SlotStatus.AVAILABLE : SlotStatus.BOOKED;
+            dividedSlots = [
+              {
+                startTime: s.startTime,
+                endTime: s.endTime,
+                status,
+                maxPatients,
+                bookedCount,
+                availableCount,
+              },
+            ];
+          } else {
+            dividedSlots = this.assignStatusToDividedSlots(
+              this.divideIntoSlots(s.startTime, s.endTime, dur, s.bufferTime),
+              appointments,
+              cleanDate,
+            );
+          }
+
+          const slotObj: any = {
             startTime: s.startTime,
             endTime: s.endTime,
-            slotDuration: dur,
-            dividedSlots: this.assignStatusToDividedSlots(
-              this.divideIntoSlots(s.startTime, s.endTime, dur),
-              appointments,
-              cleanDate
-            ),
+            schedulingType: sType,
+            dividedSlots,
           };
+
+          if (sType === SchedulingType.STREAM) {
+            slotObj.slotDuration = dur;
+            slotObj.bufferTime = s.bufferTime ?? 0;
+          } else {
+            slotObj.maxPatients = s.maxPatients ?? 0;
+          }
+
+          return slotObj;
         }),
       };
     }
@@ -550,16 +737,61 @@ export class AvailabilityService {
         source: 'recurring',
         slots: recurringSlots.map((s) => {
           const dur = s.slotDuration ?? 15;
-          return {
+          const sType = s.schedulingType ?? SchedulingType.STREAM;
+
+          let dividedSlots: Array<{
+            startTime: string;
+            endTime: string;
+            status: SlotStatus;
+            maxPatients?: number;
+            bookedCount?: number;
+            availableCount?: number;
+          }> = [];
+
+          if (sType === SchedulingType.WAVE) {
+            const bookedCount = appointments.filter(
+              (app) =>
+                app.startTime === s.startTime &&
+                app.endTime === s.endTime &&
+                app.status === 'BOOKED',
+            ).length;
+            const maxPatients = s.maxPatients || 0;
+            const availableCount = Math.max(0, maxPatients - bookedCount);
+            const status =
+              availableCount > 0 ? SlotStatus.AVAILABLE : SlotStatus.BOOKED;
+            dividedSlots = [
+              {
+                startTime: s.startTime,
+                endTime: s.endTime,
+                status,
+                maxPatients,
+                bookedCount,
+                availableCount,
+              },
+            ];
+          } else {
+            dividedSlots = this.assignStatusToDividedSlots(
+              this.divideIntoSlots(s.startTime, s.endTime, dur, s.bufferTime),
+              appointments,
+              cleanDate,
+            );
+          }
+
+          const slotObj: any = {
             startTime: s.startTime,
             endTime: s.endTime,
-            slotDuration: dur,
-            dividedSlots: this.assignStatusToDividedSlots(
-              this.divideIntoSlots(s.startTime, s.endTime, dur),
-              appointments,
-              cleanDate
-            ),
+            schedulingType: sType,
+            dividedSlots,
           };
+
+          if (sType === SchedulingType.STREAM) {
+            slotObj.slotDuration = dur;
+            slotObj.bufferTime = s.bufferTime ?? 0;
+          } else {
+            slotObj.maxPatients = s.maxPatients ?? 0;
+          }
+
+          return slotObj;
         }),
       };
     }
@@ -574,12 +806,13 @@ export class AvailabilityService {
 
   /**
    * Divides a time range into smaller slots based on the given duration.
-   * E.g. divideIntoSlots('09:00', '10:00', 30) → [{startTime:'09:00',endTime:'09:30'},{startTime:'09:30',endTime:'10:00'}]
+   * Supports optional bufferTime between slots for STREAM scheduling.
    */
   private divideIntoSlots(
     startTime: string,
     endTime: string,
     durationMinutes: number,
+    bufferTime: number = 0,
   ): Array<{ startTime: string; endTime: string }> {
     const slots: Array<{ startTime: string; endTime: string }> = [];
     let startMin = toMinutes(startTime);
@@ -590,7 +823,7 @@ export class AvailabilityService {
         startTime: toTimeString(startMin),
         endTime: toTimeString(startMin + durationMinutes),
       });
-      startMin += durationMinutes;
+      startMin += durationMinutes + bufferTime;
     }
 
     return slots;
@@ -611,14 +844,15 @@ export class AvailabilityService {
         return slotStart < appEnd && appStart < slotEnd;
       });
 
-      const bookedApp = overlapping.find(a => a.status === 'BOOKED');
+      const bookedApp = overlapping.find((a) => a.status === 'BOOKED');
       if (bookedApp) return { ...slot, status: SlotStatus.BOOKED };
 
-      const cancelledApp = overlapping.find(a => a.status === 'CANCELLED');
+      const cancelledApp = overlapping.find((a) => a.status === 'CANCELLED');
       if (cancelledApp) {
         const slotStartDate = new Date(`${dateStr}T${slot.startTime}:00`);
         const cancelDate = cancelledApp.updatedAt;
-        const diffMinutes = (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
+        const diffMinutes =
+          (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
         if (diffMinutes >= 5) {
           return { ...slot, status: SlotStatus.CANCEL_AND_AVAILABLE };
         }
@@ -669,6 +903,32 @@ export class AvailabilityService {
     }
   }
 
+  /**
+   * Validates scheduling configuration based on scheduling type.
+   */
+  private validateSchedulingConfig(
+    schedulingType: SchedulingType,
+    dto: { slotDuration?: number; bufferTime?: number; maxPatients?: number },
+  ): void {
+    if (schedulingType === SchedulingType.STREAM) {
+      if (dto.slotDuration !== undefined && dto.slotDuration <= 0) {
+        throw new BadRequestException(
+          'slotDuration must be a positive integer for STREAM scheduling',
+        );
+      }
+      if (dto.bufferTime !== undefined && dto.bufferTime < 0) {
+        throw new BadRequestException('bufferTime cannot be negative');
+      }
+    }
+    if (schedulingType === SchedulingType.WAVE) {
+      if (!dto.maxPatients || dto.maxPatients <= 0) {
+        throw new BadRequestException(
+          'maxPatients must be at least 1 for WAVE scheduling',
+        );
+      }
+    }
+  }
+
   private checkRecurringOverlap(
     existingSlots: RecurringAvailability[],
     startTime: string,
@@ -701,7 +961,18 @@ export class AvailabilityService {
     doctorId: string,
     dateStr: string,
     durationInput?: number,
-  ): Promise<Array<{ startTime: string; endTime: string; status: SlotStatus }>> {
+  ): Promise<
+    Array<{
+      startTime: string;
+      endTime: string;
+      status: SlotStatus;
+      schedulingType: SchedulingType;
+      bufferTime?: number;
+      maxPatients?: number;
+      bookedCount?: number;
+      availableCount?: number;
+    }>
+  > {
     const cleanDate = dateStr.trim();
 
     // 1. Validate date format YYYY-MM-DD
@@ -741,7 +1012,14 @@ export class AvailabilityService {
     const dayOfWeek = getDayOfWeekFromDate(cleanDate);
 
     // 5. Get doctor's raw availability intervals
-    let intervals: Array<{ startTime: string; endTime: string; slotDuration: number }> = [];
+    let intervals: Array<{
+      startTime: string;
+      endTime: string;
+      slotDuration: number;
+      schedulingType: SchedulingType;
+      bufferTime: number;
+      maxPatients: number;
+    }> = [];
 
     // 5a. Check custom overrides first
     const customSlots = await this.customRepo.find({
@@ -757,6 +1035,9 @@ export class AvailabilityService {
           startTime: s.startTime,
           endTime: s.endTime,
           slotDuration: s.slotDuration ?? 15,
+          schedulingType: s.schedulingType ?? SchedulingType.STREAM,
+          bufferTime: s.bufferTime ?? 0,
+          maxPatients: s.maxPatients ?? 0,
         }));
     } else {
       // 5b. Fall back to recurring availability
@@ -770,6 +1051,9 @@ export class AvailabilityService {
           startTime: s.startTime,
           endTime: s.endTime,
           slotDuration: s.slotDuration ?? 15,
+          schedulingType: s.schedulingType ?? SchedulingType.STREAM,
+          bufferTime: s.bufferTime ?? 0,
+          maxPatients: s.maxPatients ?? 0,
         }));
       }
     }
@@ -782,18 +1066,36 @@ export class AvailabilityService {
     }
 
     // 6. Generate candidate slots
-    const candidateSlots: Array<{ startTime: string; endTime: string }> = [];
+    const candidateSlots: Array<{
+      startTime: string;
+      endTime: string;
+      schedulingType: SchedulingType;
+      bufferTime?: number;
+      maxPatients?: number;
+    }> = [];
     for (const interval of intervals) {
-      const slotDur = durationInput ?? interval.slotDuration;
-      let startMin = toMinutes(interval.startTime);
-      const endMin = toMinutes(interval.endTime);
-
-      while (startMin + slotDur <= endMin) {
+      if (interval.schedulingType === SchedulingType.WAVE) {
         candidateSlots.push({
-          startTime: toTimeString(startMin),
-          endTime: toTimeString(startMin + slotDur),
+          startTime: interval.startTime,
+          endTime: interval.endTime,
+          schedulingType: SchedulingType.WAVE,
+          maxPatients: interval.maxPatients,
         });
-        startMin += slotDur;
+      } else {
+        const slotDur = durationInput ?? interval.slotDuration;
+        const generated = this.divideIntoSlots(
+          interval.startTime,
+          interval.endTime,
+          slotDur,
+          interval.bufferTime,
+        );
+        for (const slot of generated) {
+          candidateSlots.push({
+            ...slot,
+            schedulingType: SchedulingType.STREAM,
+            bufferTime: interval.bufferTime,
+          });
+        }
       }
     }
 
@@ -815,6 +1117,27 @@ export class AvailabilityService {
     });
 
     const resultSlots = futureSlots.map((slot) => {
+      if (slot.schedulingType === SchedulingType.WAVE) {
+        const bookedCount = appointments.filter(
+          (app) =>
+            app.startTime === slot.startTime &&
+            app.endTime === slot.endTime &&
+            app.status === 'BOOKED',
+        ).length;
+
+        const maxPatients = slot.maxPatients || 0;
+        const availableCount = Math.max(0, maxPatients - bookedCount);
+        const status =
+          availableCount > 0 ? SlotStatus.AVAILABLE : SlotStatus.BOOKED;
+
+        return {
+          ...slot,
+          status,
+          bookedCount,
+          availableCount,
+        };
+      }
+
       const slotStart = toMinutes(slot.startTime);
       const slotEnd = toMinutes(slot.endTime);
 
@@ -824,19 +1147,24 @@ export class AvailabilityService {
         return slotStart < appEnd && appStart < slotEnd;
       });
 
-      const bookedApp = overlappingAppointments.find(a => a.status === 'BOOKED');
+      const bookedApp = overlappingAppointments.find(
+        (a) => a.status === 'BOOKED',
+      );
       if (bookedApp) {
         return { ...slot, status: SlotStatus.BOOKED };
       }
 
-      const cancelledApp = overlappingAppointments.find(a => a.status === 'CANCELLED');
+      const cancelledApp = overlappingAppointments.find(
+        (a) => a.status === 'CANCELLED',
+      );
       if (cancelledApp) {
         // Construct the slot's true start date-time
         const slotStartDate = new Date(`${cleanDate}T${slot.startTime}:00`);
         const cancelDate = cancelledApp.updatedAt;
-        
+
         // Calculate difference in minutes
-        const diffMinutes = (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
+        const diffMinutes =
+          (slotStartDate.getTime() - cancelDate.getTime()) / 60000;
 
         if (diffMinutes >= 5) {
           return { ...slot, status: SlotStatus.CANCEL_AND_AVAILABLE };
