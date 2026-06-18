@@ -296,6 +296,25 @@ Patient reschedules their own appointment to a new date and time. Must be done a
   "endTime": "11:15"
 }
 ```
+- **Response (`200 OK`):**
+```json
+{
+  "message": "Appointment rescheduled successfully",
+  "data": {
+    "previousAppointment": {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "status": "RESCHEDULED"
+    },
+    "newAppointment": {
+      "id": "b2c3d4e5-f678-90ab-cdef-123456789012",
+      "date": "2026-06-21",
+      "startTime": "11:00",
+      "endTime": "11:15",
+      "status": "BOOKED"
+    }
+  }
+}
+```
 
 ### G. Cancel Appointment
 Patient cancels their own appointment.
