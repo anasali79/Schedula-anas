@@ -36,8 +36,5 @@ async function bootstrap() {
     `Doctor routes:      /api/doctor  |  /api/doctor/:id  |  /api/doctor/profile`,
   );
   console.log(`Patient routes:     /api/patient/profile`);
-  console.log(
-    `Appointment routes: /api/appointment  |  /api/appointment/my  |  /api/appointment/:id/cancel  |  /api/doctor/appointments`,
-  );
 }
 bootstrap();

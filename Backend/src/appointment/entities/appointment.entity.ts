@@ -42,8 +42,8 @@ export class Appointment {
   @Column({ type: 'varchar', default: AppointmentStatus.BOOKED })
   status: AppointmentStatus;
 
-  @Column({ type: 'int', default: 0 })
-  tokenNumber: number;
+  @Column({ type: 'int', nullable: true, default: null })
+  tokenNumber: number | null;
 
   @CreateDateColumn()
   createdAt: Date;

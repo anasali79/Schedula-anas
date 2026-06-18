@@ -9,13 +9,6 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
-export interface ConsultationSlot {
-  start: string;
-  end: string;
-}
-
-export type ConsultationHours = Record<string, ConsultationSlot[]>;
-
 @Entity('doctors')
 export class Doctor {
   @PrimaryGeneratedColumn('uuid')
@@ -43,8 +36,6 @@ export class Doctor {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   consultationFee: number;
 
-  @Column({ type: 'jsonb' })
-  consultationHours: ConsultationHours;
 
   @Column({ type: 'text', nullable: true })
   profileDetails: string | null;

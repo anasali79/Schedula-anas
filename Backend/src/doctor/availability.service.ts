@@ -20,6 +20,7 @@ import {
   SlotStatus,
 } from './dto/availability.dto';
 import { SchedulingType } from '../common/enums/scheduling-type.enum';
+import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 
 // Helper: Convert "HH:MM" to total minutes for easy comparison
 function toMinutes(time: string): number {
@@ -86,7 +87,7 @@ export class AvailabilityService {
   async createRecurring(
     userId: string,
     dto: CreateRecurringAvailabilityDto,
-  ): Promise<RecurringAvailability> {
+  ): Promise<RecurringAvailability | RecurringAvailability[]> {
     const doctor = await this.findDoctorByUserIdOrFail(userId);
     const schedulingType = dto.schedulingType ?? SchedulingType.STREAM;
 
@@ -96,35 +97,54 @@ export class AvailabilityService {
     // Validate: endTime must be after startTime
     this.validateTimeRange(dto.startTime, dto.endTime);
 
-    // Check for overlap with existing slots on the same day
-    const existingSlots = await this.recurringRepo.find({
-      where: { doctorId: doctor.id, dayOfWeek: dto.dayOfWeek },
-    });
-
-    this.checkRecurringOverlap(existingSlots, dto.startTime, dto.endTime);
-
-    // Check for exact duplicate
-    const duplicate = existingSlots.find(
-      (s) => s.startTime === dto.startTime && s.endTime === dto.endTime,
-    );
-    if (duplicate) {
-      throw new ConflictException(
-        `A slot already exists for ${dto.dayOfWeek} from ${dto.startTime} to ${dto.endTime}`,
+    // Determine the days we need to create slots for
+    let daysToCreate: DayOfWeek[] = [];
+    if (dto.daysOfWeek && dto.daysOfWeek.length > 0) {
+      daysToCreate = dto.daysOfWeek;
+    } else if (dto.dayOfWeek) {
+      daysToCreate = [dto.dayOfWeek];
+    } else {
+      throw new BadRequestException(
+        'Either dayOfWeek or daysOfWeek must be provided',
       );
     }
 
-    const slot = this.recurringRepo.create({
-      doctorId: doctor.id,
-      dayOfWeek: dto.dayOfWeek,
-      startTime: dto.startTime,
-      endTime: dto.endTime,
-      slotDuration: dto.slotDuration ?? 15,
-      schedulingType,
-      bufferTime: dto.bufferTime ?? 0,
-      maxPatients: dto.maxPatients ?? 0,
-    });
+    const createdSlots: RecurringAvailability[] = [];
 
-    return this.recurringRepo.save(slot);
+    for (const day of daysToCreate) {
+      // Check for overlap with existing slots on the same day
+      const existingSlots = await this.recurringRepo.find({
+        where: { doctorId: doctor.id, dayOfWeek: day },
+      });
+
+      this.checkRecurringOverlap(existingSlots, dto.startTime, dto.endTime);
+
+      // Check for exact duplicate
+      const duplicate = existingSlots.find(
+        (s) => s.startTime === dto.startTime && s.endTime === dto.endTime,
+      );
+      if (duplicate) {
+        throw new ConflictException(
+          `A slot already exists for ${day} from ${dto.startTime} to ${dto.endTime}`,
+        );
+      }
+
+      const slot = this.recurringRepo.create({
+        doctorId: doctor.id,
+        dayOfWeek: day,
+        startTime: dto.startTime,
+        endTime: dto.endTime,
+        slotDuration: dto.slotDuration ?? 15,
+        schedulingType,
+        bufferTime: dto.bufferTime ?? 0,
+        maxPatients: dto.maxPatients ?? 0,
+      });
+
+      createdSlots.push(slot);
+    }
+
+    const savedSlots = await this.recurringRepo.save(createdSlots);
+    return savedSlots.length === 1 ? savedSlots[0] : savedSlots;
   }
 
   async getRecurring(userId: string): Promise<RecurringAvailability[]> {
@@ -513,6 +533,167 @@ export class AvailabilityService {
         await this.customRepo.save(blockout);
       }
     }
+  }
+
+  async setUnavailable(
+    userId: string,
+    date: string,
+    startTime?: string,
+    endTime?: string,
+  ): Promise<
+    Array<{
+      appointmentId: string;
+      patientId: string;
+      previousDate: string;
+      previousStartTime: string;
+      previousEndTime: string;
+      newDate: string;
+      newStartTime: string;
+      newEndTime: string;
+      tokenNumber: number | null;
+    }>
+  > {
+    const doctor = await this.findDoctorByUserIdOrFail(userId);
+
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
+      .toString()
+      .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+
+    if (date < todayStr) {
+      throw new BadRequestException('Date cannot be in the past');
+    }
+
+    let appointmentsToReschedule: Appointment[] = [];
+
+    if (startTime && endTime) {
+      // 1. Cancel specific slot occurrence (removes from available intervals)
+      try {
+        await this.cancelOccurrence(userId, date, startTime, endTime);
+      } catch (error) {
+        if (!(error instanceof NotFoundException)) {
+          throw error;
+        }
+      }
+
+      // 2. Find any BOOKED appointments for this doctor on this date and specific slot
+      appointmentsToReschedule = await this.appointmentRepo.find({
+        where: {
+          doctorId: doctor.id,
+          date,
+          startTime,
+          endTime,
+          status: AppointmentStatus.BOOKED,
+        },
+      });
+    } else {
+      // 1. Block the entire day by inserting/updating a blockout slot
+      // First, remove any custom overrides for this date
+      const customSlots = await this.customRepo.find({
+        where: { doctorId: doctor.id, date },
+      });
+      if (customSlots.length > 0) {
+        await this.customRepo.remove(customSlots);
+      }
+
+      // Insert blockout slot (00:00 - 00:00)
+      const blockout = this.customRepo.create({
+        doctorId: doctor.id,
+        date,
+        startTime: '00:00',
+        endTime: '00:00',
+      });
+      await this.customRepo.save(blockout);
+
+      // 2. Find all BOOKED appointments for this doctor on this date
+      appointmentsToReschedule = await this.appointmentRepo.find({
+        where: {
+          doctorId: doctor.id,
+          date,
+          status: AppointmentStatus.BOOKED,
+        },
+      });
+    }
+
+    const rescheduledDetails: Array<{
+      appointmentId: string;
+      patientId: string;
+      previousDate: string;
+      previousStartTime: string;
+      previousEndTime: string;
+      newDate: string;
+      newStartTime: string;
+      newEndTime: string;
+      tokenNumber: number | null;
+    }> = [];
+
+    for (const appt of appointmentsToReschedule) {
+      // Look for the next available slot for this doctor starting from the date of the appointment
+      const excludeStart = startTime;
+      const excludeEnd = endTime;
+
+      const nextSlot = await this.findNextAvailableSlot(
+        doctor.id,
+        appt.date,
+        excludeStart,
+        excludeEnd,
+      );
+
+      if (nextSlot) {
+        let newTokenNumber: number | null = null;
+        if (nextSlot.schedulingType === 'WAVE') {
+          const rawResult = await this.appointmentRepo
+            .createQueryBuilder('appointment')
+            .select('MAX(appointment.tokenNumber)', 'max')
+            .where('appointment.doctorId = :doctorId', { doctorId: doctor.id })
+            .andWhere('appointment.date = :date', { date: nextSlot.date })
+            .andWhere('appointment.startTime = :startTime', {
+              startTime: nextSlot.startTime,
+            })
+            .andWhere('appointment.endTime = :endTime', {
+              endTime: nextSlot.endTime,
+            })
+            .andWhere('appointment.status IN (:...statuses)', {
+              statuses: [AppointmentStatus.BOOKED],
+            })
+            .getRawOne();
+
+          const maxResult = rawResult as { max: string | null } | undefined;
+          const currentMax = maxResult?.max ? parseInt(maxResult.max, 10) : 0;
+          newTokenNumber = currentMax + 1;
+        }
+
+        const previousDate = appt.date;
+        const previousStartTime = appt.startTime;
+        const previousEndTime = appt.endTime;
+
+        // Reschedule the appointment to the new slot
+        appt.date = nextSlot.date;
+        appt.startTime = nextSlot.startTime;
+        appt.endTime = nextSlot.endTime;
+        appt.tokenNumber = newTokenNumber;
+
+        await this.appointmentRepo.save(appt);
+
+        rescheduledDetails.push({
+          appointmentId: appt.id,
+          patientId: appt.patientId,
+          previousDate,
+          previousStartTime,
+          previousEndTime,
+          newDate: nextSlot.date,
+          newStartTime: nextSlot.startTime,
+          newEndTime: nextSlot.endTime,
+          tokenNumber: newTokenNumber,
+        });
+      } else {
+        // Fallback: if no alternative slots are found in the next 30 days, cancel the appointment
+        appt.status = AppointmentStatus.CANCELLED;
+        await this.appointmentRepo.save(appt);
+      }
+    }
+
+    return rescheduledDetails;
   }
 
   async updateRecurring(
@@ -1184,5 +1365,90 @@ export class AvailabilityService {
     }
 
     return resultSlots;
+  }
+
+  /**
+   * Find the next available slot for a doctor, starting from a given date.
+   * Searches up to 30 days ahead. Used by rescheduling to suggest alternatives.
+   */
+  async findNextAvailableSlot(
+    doctorId: string,
+    fromDate: string,
+    excludeStartTime?: string,
+    excludeEndTime?: string,
+  ): Promise<{
+    date: string;
+    startTime: string;
+    endTime: string;
+    schedulingType: string;
+    maxPatients?: number;
+    bookedCount?: number;
+    availableCount?: number;
+  } | null> {
+    const startDate = new Date(fromDate + 'T00:00:00');
+
+    for (let i = 0; i < 30; i++) {
+      const currentDate = new Date(startDate);
+      currentDate.setDate(startDate.getDate() + i);
+      const dateStr = `${currentDate.getFullYear()}-${(
+        currentDate.getMonth() + 1
+      )
+        .toString()
+        .padStart(
+          2,
+          '0',
+        )}-${currentDate.getDate().toString().padStart(2, '0')}`;
+
+      try {
+        const slots = await this.getAvailableSlots(doctorId, dateStr);
+        for (const slot of slots) {
+          // Skip the slot we're trying to move away from
+          if (
+            dateStr === fromDate &&
+            excludeStartTime &&
+            excludeEndTime &&
+            slot.startTime === excludeStartTime &&
+            slot.endTime === excludeEndTime
+          ) {
+            continue;
+          }
+
+          const validStatuses: string[] = [
+            SlotStatus.AVAILABLE,
+            SlotStatus.CANCEL_AND_AVAILABLE,
+          ];
+
+          if (validStatuses.includes(slot.status)) {
+            const result: {
+              date: string;
+              startTime: string;
+              endTime: string;
+              schedulingType: string;
+              maxPatients?: number;
+              bookedCount?: number;
+              availableCount?: number;
+            } = {
+              date: dateStr,
+              startTime: slot.startTime,
+              endTime: slot.endTime,
+              schedulingType: slot.schedulingType,
+            };
+
+            if (slot.schedulingType === SchedulingType.WAVE) {
+              result.maxPatients = slot.maxPatients;
+              result.bookedCount = slot.bookedCount;
+              result.availableCount = slot.availableCount;
+            }
+
+            return result;
+          }
+        }
+      } catch {
+        // No availability on this date, continue to next day
+        continue;
+      }
+    }
+
+    return null;
   }
 }
