@@ -6,6 +6,7 @@ import {
   Matches,
   IsInt,
   Min,
+  Max,
   IsArray,
   ValidatorConstraint,
   ValidatorConstraintInterface,
@@ -273,4 +274,15 @@ export class SetUnavailableDto {
   })
   @Validate(IsEndAfterStartConstraint) // ← endTime > startTime (agar dono hain)
   endTime?: string;
+}
+
+// ─── Next Available Appointment Query DTO ─────────────────────────────────────
+
+export class NextAvailableQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'searchWindow must be an integer' })
+  @Min(1, { message: 'searchWindow must be at least 1' })
+  @Max(30, { message: 'searchWindow cannot exceed 30 working days' })
+  searchWindow?: number; // default: 30 working days
 }

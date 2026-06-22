@@ -24,7 +24,7 @@ import {
 } from './dto/doctor-profile.dto';
 import { DoctorDiscoveryQueryDto } from './dto/doctor-discovery-query.dto';
 import { AvailabilityService } from './availability.service';
-import { GetSlotsQueryDto } from './dto/availability.dto';
+import { GetSlotsQueryDto, NextAvailableQueryDto } from './dto/availability.dto';
 import { AppointmentService } from '../appointment/appointment.service';
 
 @Controller('doctor')
@@ -34,7 +34,7 @@ export class DoctorController {
     private readonly availabilityService: AvailabilityService,
     @Inject(forwardRef(() => AppointmentService))
     private readonly appointmentService: AppointmentService,
-  ) {}
+  ) { }
 
   @Get()
   findAll(@Query() query: DoctorDiscoveryQueryDto) {
@@ -115,6 +115,34 @@ export class DoctorController {
     id: string,
   ) {
     return this.appointmentService.cancelAppointmentByDoctor(user.id, id);
+  }
+
+  // ─── Next Available Appointment (Public) ────────────────────────────────────
+  // GET /api/doctor/:doctorId/next-available?searchWindow=30
+  @Get(':doctorId/next-available')
+  async getNextAvailable(
+    @Param(
+      'doctorId',
+      new ParseUUIDPipe({
+        version: '4',
+        exceptionFactory: () =>
+          new BadRequestException(
+            'Invalid doctor ID format. Expected a valid UUID.',
+          ),
+      }),
+    )
+    doctorId: string,
+    @Query() query: NextAvailableQueryDto,
+  ) {
+    const result =
+      await this.availabilityService.getNextAvailableAppointment(
+        doctorId,
+        query.searchWindow,
+      );
+    return {
+      message: result.message,
+      data: result,
+    };
   }
 
   @Get(':doctorId/slots')
