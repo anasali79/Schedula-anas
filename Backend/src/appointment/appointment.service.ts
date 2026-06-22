@@ -8,7 +8,7 @@ import {
   Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import { Appointment } from './entities/appointment.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
@@ -535,7 +535,7 @@ export class AppointmentService {
 
   // ─── 4. Doctor Appointment View ───────────────────────────────────────────────
 
-  async getDoctorAppointments(userId: string) {
+  async getDoctorAppointments(userId: string, date?: string) {
     const doctor = await this.doctorRepo.findOne({ where: { userId } });
     if (!doctor) {
       throw new NotFoundException(
@@ -543,8 +543,20 @@ export class AppointmentService {
       );
     }
 
+    const whereClause: any = {
+      doctorId: doctor.id,
+      status: Not(AppointmentStatus.CANCELLED),
+    };
+
+    if (date) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new BadRequestException('Invalid date format. Expected YYYY-MM-DD');
+      }
+      whereClause.date = date;
+    }
+
     const appointments = await this.appointmentRepo.find({
-      where: { doctorId: doctor.id },
+      where: whereClause,
       relations: { patient: true },
       order: { date: 'DESC', startTime: 'DESC' },
     });
@@ -559,6 +571,50 @@ export class AppointmentService {
     return {
       message: 'Appointments retrieved successfully',
       data: appointments.map((appt) => this.toDoctorAppointmentResponse(appt)),
+    };
+  }
+
+  // ─── 4.5. Doctor Cancel Appointment ───────────────────────────────────────────
+
+  async cancelAppointmentByDoctor(userId: string, appointmentId: string) {
+    const doctor = await this.doctorRepo.findOne({ where: { userId } });
+    if (!doctor) {
+      throw new NotFoundException(
+        'Doctor profile not found. Please create your profile first.',
+      );
+    }
+
+    // Find appointment
+    const appointment = await this.appointmentRepo.findOne({
+      where: { id: appointmentId },
+      relations: { doctor: true, patient: true },
+    });
+
+    if (!appointment) {
+      throw new NotFoundException(
+        `Appointment with ID ${appointmentId} not found`,
+      );
+    }
+
+    // Only assigned doctor can access their appointments
+    if (appointment.doctorId !== doctor.id) {
+      throw new ForbiddenException(
+        'Access denied: You can only access your own appointments',
+      );
+    }
+
+    // Cannot cancel already cancelled appointment
+    if (appointment.status === AppointmentStatus.CANCELLED) {
+      throw new BadRequestException('This appointment is already cancelled');
+    }
+
+    // Cancel the appointment
+    appointment.status = AppointmentStatus.CANCELLED;
+    const saved = await this.appointmentRepo.save(appointment);
+
+    return {
+      message: 'Appointment cancelled successfully',
+      data: this.toDoctorAppointmentResponse(saved),
     };
   }
 
@@ -781,6 +837,7 @@ export class AppointmentService {
       startTime: appointment.startTime,
       endTime: appointment.endTime,
       status: appointment.status,
+      schedulingType: appointment.tokenNumber !== null ? 'WAVE' : 'STREAM',
       ...(appointment.tokenNumber !== null && { tokenNumber: appointment.tokenNumber }),
       patient: appointment.patient
         ? {

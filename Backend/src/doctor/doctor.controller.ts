@@ -92,8 +92,29 @@ export class DoctorController {
   @Get('appointments')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.DOCTOR)
-  getDoctorAppointments(@CurrentUser() user: { id: string }) {
-    return this.appointmentService.getDoctorAppointments(user.id);
+  getDoctorAppointments(
+    @CurrentUser() user: { id: string },
+    @Query('date') date?: string,
+  ) {
+    return this.appointmentService.getDoctorAppointments(user.id, date);
+  }
+
+  @Patch('appointments/:id/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.DOCTOR)
+  cancelAppointmentByDoctor(
+    @CurrentUser() user: { id: string },
+    @Param(
+      'id',
+      new ParseUUIDPipe({
+        version: '4',
+        exceptionFactory: () =>
+          new BadRequestException('Invalid appointment ID format'),
+      }),
+    )
+    id: string,
+  ) {
+    return this.appointmentService.cancelAppointmentByDoctor(user.id, id);
   }
 
   @Get(':doctorId/slots')
