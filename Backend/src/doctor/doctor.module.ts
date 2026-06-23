@@ -9,6 +9,8 @@ import { AvailabilityService } from './availability.service';
 import { AvailabilityController } from './availability.controller';
 import { Appointment } from '../appointment/entities/appointment.entity';
 import { AppointmentModule } from '../appointment/appointment.module';
+import { User } from '../users/entities/user.entity';
+import { Patient } from '../patient/entities/patient.entity';
 
 @Module({
   imports: [
@@ -17,6 +19,8 @@ import { AppointmentModule } from '../appointment/appointment.module';
       RecurringAvailability,
       CustomAvailability,
       Appointment,
+      User,
+      Patient,
     ]),
     forwardRef(() => AppointmentModule),
   ],
@@ -24,4 +28,4 @@ import { AppointmentModule } from '../appointment/appointment.module';
   providers: [DoctorService, AvailabilityService],
   exports: [DoctorService, AvailabilityService],
 })
-export class DoctorModule {}
+export class DoctorModule { }

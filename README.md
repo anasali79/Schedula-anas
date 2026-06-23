@@ -231,6 +231,35 @@ Returns all appointments booked with the authenticated doctor, with patient deta
 - **Route:** `GET /api/doctor/appointments`
 - **Access:** Authenticated `DOCTOR` only.
 
+### I. Next Available Appointment (Public)
+Finds the next available slot for a doctor within a specified working day window.
+
+- **Route:** `GET /api/doctor/:doctorId/next-available`
+- **Access:** Public
+- **Query Params:** `searchWindow` (Optional, integer between 1 and 30, default: 30)
+- **Response (`200 OK`):**
+```json
+{
+  "message": "Next available appointment is on 2026-06-23 (TUESDAY)",
+  "data": {
+    "doctorId": "2a15f013-1cf0-4bb5-8664-cd25a2e57303",
+    "searchedFromDate": "2026-06-22",
+    "todayAvailable": false,
+    "nextAvailableDate": "2026-06-23",
+    "dayOfWeek": "TUESDAY",
+    "schedulingType": "STREAM",
+    "availableSlots": [
+      {
+        "startTime": "09:00",
+        "endTime": "09:30",
+        "status": "AVAILABLE",
+        "schedulingType": "STREAM"
+      }
+    ]
+  }
+}
+```
+
 ---
 
 ## 3. Patient Section (`/api/patient` & Booking)

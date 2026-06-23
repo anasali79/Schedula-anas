@@ -80,7 +80,7 @@ export class AvailabilityService {
 
     @InjectRepository(Appointment)
     private readonly appointmentRepo: Repository<Appointment>,
-  ) {}
+  ) { }
 
   // ─── Recurring Availability ──────────────────────────────────────────────────
 
@@ -1450,5 +1450,258 @@ export class AvailabilityService {
     }
 
     return null;
+  }
+
+  // ─── Next Available Appointment Booking ─────────────────────────────────────
+
+  /**
+   * Find the next available appointment for a doctor.
+   * 1. Check today's availability first
+   * 2. If today is fully booked, search forward up to `searchWindow` working days
+   * 3. Skip doctor's weekly off days (days with no recurring schedule)
+   * 4. Skip blocked-out dates (custom override with 00:00-00:00)
+   * 5. Support both STREAM and WAVE scheduling
+   */
+  async getNextAvailableAppointment(
+    doctorId: string,
+    searchWindow: number = 30,
+  ): Promise<{
+    doctorId: string;
+    searchedFromDate: string;
+    todayAvailable: boolean;
+    nextAvailableDate: string | null;
+    dayOfWeek: string | null;
+    schedulingType: string;
+    availableSlots: Array<{
+      startTime: string;
+      endTime: string;
+      status: string;
+      schedulingType: string;
+      maxPatients?: number;
+      bookedCount?: number;
+      availableCount?: number;
+    }>;
+    message: string;
+  }> {
+    // 1. Validate doctor exists
+    const doctor = await this.doctorRepo.findOne({ where: { id: doctorId } });
+    if (!doctor) {
+      throw new NotFoundException(`Doctor with ID ${doctorId} not found`);
+    }
+
+    // 2. Get today's date
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
+      .toString()
+      .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+
+    // 3. Fetch recurring availability to determine working days
+    const recurringSlots = await this.recurringRepo.find({
+      where: { doctorId },
+    });
+
+    // If doctor has no recurring schedule at all, check if any custom overrides exist
+    if (recurringSlots.length === 0) {
+      const maxDate = new Date(now);
+      maxDate.setDate(now.getDate() + 60);
+      const maxDateStr = `${maxDate.getFullYear()}-${(maxDate.getMonth() + 1)
+        .toString()
+        .padStart(2, '0')}-${maxDate.getDate().toString().padStart(2, '0')}`;
+
+      const customOverrides = await this.customRepo
+        .createQueryBuilder('ca')
+        .where('ca.doctorId = :doctorId', { doctorId })
+        .andWhere('ca.date >= :start', { start: todayStr })
+        .andWhere('ca.date <= :end', { end: maxDateStr })
+        .andWhere(
+          'NOT (ca.startTime = :blockStart AND ca.endTime = :blockEnd)',
+          { blockStart: '00:00', blockEnd: '00:00' },
+        )
+        .getCount();
+
+      if (customOverrides === 0) {
+        throw new NotFoundException(
+          'Doctor has no configured schedule. No appointments available.',
+        );
+      }
+    }
+
+    // Build set of working days (days that have recurring slots)
+    const workingDays = new Set<string>(
+      recurringSlots.map((s) => s.dayOfWeek),
+    );
+
+    // 4. Check today first
+    const todayResult = await this.checkDayAvailability(
+      doctorId,
+      todayStr,
+      workingDays,
+    );
+
+    if (todayResult.hasAvailableSlots) {
+      // Determine scheduling type(s)
+      const types = new Set(
+        todayResult.slots.map((s) => s.schedulingType),
+      );
+      const schedulingType =
+        types.size > 1 ? 'MIXED' : types.values().next().value || 'STREAM';
+
+      return {
+        doctorId,
+        searchedFromDate: todayStr,
+        todayAvailable: true,
+        nextAvailableDate: todayStr,
+        dayOfWeek: getDayOfWeekFromDate(todayStr),
+        schedulingType,
+        availableSlots: todayResult.slots,
+        message: 'Slots are available today',
+      };
+    }
+
+    // 5. Search forward — count working days only
+    let workingDaysSearched = 0;
+    let calendarDaysSearched = 0;
+    const maxCalendarDays = searchWindow * 3;
+
+    while (
+      workingDaysSearched < searchWindow &&
+      calendarDaysSearched < maxCalendarDays
+    ) {
+      calendarDaysSearched++;
+      const candidateDate = new Date(now);
+      candidateDate.setDate(now.getDate() + calendarDaysSearched);
+      const candidateDateStr = `${candidateDate.getFullYear()}-${(
+        candidateDate.getMonth() + 1
+      )
+        .toString()
+        .padStart(2, '0')}-${candidateDate
+          .getDate()
+          .toString()
+          .padStart(2, '0')}`;
+
+      const candidateDayOfWeek = getDayOfWeekFromDate(candidateDateStr);
+      const hasCustomOverride = await this.customRepo.findOne({
+        where: { doctorId, date: candidateDateStr },
+      });
+
+      if (!workingDays.has(candidateDayOfWeek) && !hasCustomOverride) {
+        continue;
+      }
+
+      if (hasCustomOverride) {
+        const blockout = await this.customRepo.findOne({
+          where: {
+            doctorId,
+            date: candidateDateStr,
+            startTime: '00:00',
+            endTime: '00:00',
+          },
+        });
+        if (blockout) {
+          workingDaysSearched++;
+          continue;
+        }
+      }
+      workingDaysSearched++;
+
+      // Check availability for this day
+      const dayResult = await this.checkDayAvailability(
+        doctorId,
+        candidateDateStr,
+        workingDays,
+      );
+
+      if (dayResult.hasAvailableSlots) {
+        const types = new Set(
+          dayResult.slots.map((s) => s.schedulingType),
+        );
+        const schedulingType =
+          types.size > 1 ? 'MIXED' : types.values().next().value || 'STREAM';
+
+        return {
+          doctorId,
+          searchedFromDate: todayStr,
+          todayAvailable: false,
+          nextAvailableDate: candidateDateStr,
+          dayOfWeek: candidateDayOfWeek,
+          schedulingType,
+          availableSlots: dayResult.slots,
+          message: `Next available appointment is on ${candidateDateStr} (${candidateDayOfWeek})`,
+        };
+      }
+    }
+
+    // 6. No availability found within the search window
+    throw new NotFoundException(
+      `No appointments available in the next ${searchWindow} working days. Please try again later.`,
+    );
+  }
+
+  /**
+   * Helper: Check if a specific date has available slots for a doctor.
+   * Returns the available slots (AVAILABLE or CANCEL_AND_AVAILABLE) or empty array.
+   */
+  private async checkDayAvailability(
+    doctorId: string,
+    dateStr: string,
+    workingDays: Set<string>,
+  ): Promise<{
+    hasAvailableSlots: boolean;
+    slots: Array<{
+      startTime: string;
+      endTime: string;
+      status: string;
+      schedulingType: string;
+      maxPatients?: number;
+      bookedCount?: number;
+      availableCount?: number;
+    }>;
+  }> {
+    try {
+      const allSlots = await this.getAvailableSlots(doctorId, dateStr);
+
+      const validStatuses: string[] = [
+        SlotStatus.AVAILABLE,
+        SlotStatus.CANCEL_AND_AVAILABLE,
+      ];
+
+      const availableSlots = allSlots
+        .filter((slot) => validStatuses.includes(slot.status))
+        .map((slot) => {
+          const result: {
+            startTime: string;
+            endTime: string;
+            status: string;
+            schedulingType: string;
+            maxPatients?: number;
+            bookedCount?: number;
+            availableCount?: number;
+          } = {
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            status: slot.status,
+            schedulingType: slot.schedulingType,
+          };
+
+          if (slot.schedulingType === SchedulingType.WAVE) {
+            result.maxPatients = slot.maxPatients;
+            result.bookedCount = slot.bookedCount;
+            result.availableCount = slot.availableCount;
+          }
+
+          return result;
+        });
+
+      return {
+        hasAvailableSlots: availableSlots.length > 0,
+        slots: availableSlots,
+      };
+    } catch {
+      // NotFoundException or any error means no availability on this date
+      return {
+        hasAvailableSlots: false,
+        slots: [],
+      };
+    }
   }
 }
