@@ -7,6 +7,7 @@ import { UsersModule } from './users/users.module';
 import { DoctorModule } from './doctor/doctor.module';
 import { PatientModule } from './patient/patient.module';
 import { AppointmentModule } from './appointment/appointment.module';
+import { NotificationModule } from './notification/notification.module';
 import { getDatabaseConfig } from './config/database.config';
 
 @Module({
@@ -27,6 +28,7 @@ import { getDatabaseConfig } from './config/database.config';
     DoctorModule,
     PatientModule,
     AppointmentModule,
+    NotificationModule,
   ],
 })
 export class AppModule {}

@@ -6,6 +6,7 @@ import { Patient } from './patient/entities/patient.entity';
 import { RecurringAvailability } from './doctor/entities/recurring-availability.entity';
 import { CustomAvailability } from './doctor/entities/custom-availability.entity';
 import { Appointment } from './appointment/entities/appointment.entity';
+import { Notification } from './notification/entities/notification.entity';
 
 config();
 
@@ -18,6 +19,7 @@ const shared: DataSourceOptions = {
     RecurringAvailability,
     CustomAvailability,
     Appointment,
+    Notification,
   ],
   migrations: ['dist/migrations/*.js'],
   ssl:

@@ -8,7 +8,7 @@ import {
   Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { Repository, Not, DataSource } from 'typeorm';
 import { Appointment } from './entities/appointment.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
@@ -17,6 +17,66 @@ import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 import { AvailabilityService } from '../doctor/availability.service';
 import { SlotStatus } from '../doctor/dto/availability.dto';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/enums/notification-type.enum';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const ARRIVAL_BUFFER_MINUTES = 5;
+const RESCHEDULE_CUTOFF_MINUTES = 30;
+const CANCEL_CUTOFF_MINUTES = 30;
+
+// ─── Notification Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Convert "17:00" → "5:00 PM"
+ */
+function formatTime(time: string): string {
+  const [hourStr, minuteStr] = time.split(':');
+  let hour = parseInt(hourStr, 10);
+  const minute = minuteStr;
+  const period = hour >= 12 ? 'PM' : 'AM';
+  hour = hour % 12 || 12;
+  return `${hour}:${minute} ${period}`;
+}
+
+/**
+ * Convert "2026-06-23" → "23 Jun 2026"
+ */
+function formatDate(date: string): string {
+  const [year, month, day] = date.split('-');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${parseInt(day)} ${months[parseInt(month) - 1]} ${year}`;
+}
+
+/**
+ * Build appointment notification message and note separately.
+ */
+function buildAppointmentNotification(
+  action: 'booked' | 'cancelled' | 'cancelled by the doctor' | 'rescheduled to',
+  doctorName: string,
+  date: string,
+  startTime: string,
+): { message: string; note: string | null } {
+  const formattedDate = formatDate(date);
+  const formattedTime = formatTime(startTime);
+
+  const message =
+    action === 'rescheduled to'
+      ? `Your appointment with ${doctorName} has been rescheduled to ${formattedDate} at ${formattedTime}.`
+      : `Your appointment with ${doctorName} on ${formattedDate} at ${formattedTime} has been ${action}.`;
+
+  const isCancelled =
+    action === 'cancelled' || action === 'cancelled by the doctor';
+
+  const note = isCancelled
+    ? null
+    : `Please arrive ${ARRIVAL_BUFFER_MINUTES} minutes before your appointment time.`;
+
+  return { message, note };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 @Injectable()
 export class AppointmentService {
@@ -32,18 +92,67 @@ export class AppointmentService {
 
     @Inject(forwardRef(() => AvailabilityService))
     private readonly availabilityService: AvailabilityService,
-  ) {}
 
-  // ─── 1. Book Appointment ──────────────────────────────────────────────────────
+    private readonly notificationService: NotificationService,
+    private readonly dataSource: DataSource,
+  ) { }
 
-  async bookAppointment(userId: string, dto: BookAppointmentDto) {
-    // 1. Find the patient profile for this user
+  // ─── Private Helpers ──────────────────────────────────────────────────────────
+
+  /**
+   * Helper — patient lookup by userId
+   */
+  private async getPatientByUserId(userId: string): Promise<Patient> {
     const patient = await this.patientRepo.findOne({ where: { userId } });
     if (!patient) {
       throw new NotFoundException(
         'Patient profile not found. Please create your profile first.',
       );
     }
+    return patient;
+  }
+
+  /**
+   * Helper — doctor lookup by userId
+   */
+  private async getDoctorByUserId(userId: string): Promise<Doctor> {
+    const doctor = await this.doctorRepo.findOne({ where: { userId } });
+    if (!doctor) {
+      throw new NotFoundException(
+        'Doctor profile not found. Please create your profile first.',
+      );
+    }
+    return doctor;
+  }
+
+  /**
+   * Helper — Fire-and-forget notification — appointment never fails due to notification error
+   */
+  private async sendNotification(
+    patientId: string,
+    title: string,
+    message: string,
+    type: NotificationType,
+    note: string | null = null,
+  ): Promise<void> {
+    try {
+      await this.notificationService.createNotification(
+        patientId,
+        title,
+        message,
+        type,
+        note,
+      );
+    } catch (error) {
+      console.error('Notification creation failed:', error);
+    }
+  }
+
+  // ─── 1. Book Appointment ──────────────────────────────────────────────────────
+
+  async bookAppointment(userId: string, dto: BookAppointmentDto) {
+    // 1. Find the patient profile for this user
+    const patient = await this.getPatientByUserId(userId);
 
     // 2. Verify doctor exists
     const doctor = await this.doctorRepo.findOne({
@@ -137,6 +246,16 @@ export class AppointmentService {
 
     const saved = await this.appointmentRepo.save(appointment);
 
+    // Fix 1: Notification failure appointment ko fail nahi karega
+    const bookedNotif = buildAppointmentNotification('booked', doctor.fullName, dto.date, dto.startTime);
+    await this.sendNotification(
+      patient.id,
+      'Appointment Booked',
+      bookedNotif.message,
+      NotificationType.APPOINTMENT_BOOKED,
+      bookedNotif.note,
+    );
+
     // Re-fetch with relations for response
     const fullAppointment = await this.appointmentRepo.findOne({
       where: { id: saved.id },
@@ -152,12 +271,7 @@ export class AppointmentService {
   // ─── 2. Patient Appointment View ──────────────────────────────────────────────
 
   async getPatientAppointments(userId: string) {
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
+    const patient = await this.getPatientByUserId(userId);
 
     const appointments = await this.appointmentRepo.find({
       where: { patientId: patient.id },
@@ -181,12 +295,7 @@ export class AppointmentService {
   // ─── 3. Cancel Appointment ────────────────────────────────────────────────────
 
   async cancelAppointment(userId: string, appointmentId: string) {
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
+    const patient = await this.getPatientByUserId(userId);
 
     // Find appointment
     const appointment = await this.appointmentRepo.findOne({
@@ -219,6 +328,16 @@ export class AppointmentService {
     appointment.status = AppointmentStatus.CANCELLED;
     const saved = await this.appointmentRepo.save(appointment);
 
+    // Fix 1: Notification failure appointment ko fail nahi karega
+    const cancelledNotif = buildAppointmentNotification('cancelled', appointment.doctor.fullName, appointment.date, appointment.startTime);
+    await this.sendNotification(
+      patient.id,
+      'Appointment Cancelled',
+      cancelledNotif.message,
+      NotificationType.APPOINTMENT_CANCELLED,
+      cancelledNotif.note,
+    );
+
     return {
       message: 'Appointment cancelled successfully',
       data: this.toPatientAppointmentResponse(saved),
@@ -233,12 +352,7 @@ export class AppointmentService {
     dto: RescheduleAppointmentDto,
   ) {
     // 1. Find the patient profile
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
+    const patient = await this.getPatientByUserId(userId);
 
     // 2. Find the existing appointment
     const appointment = await this.appointmentRepo.findOne({
@@ -481,8 +595,8 @@ export class AppointmentService {
 
     // 13. Atomically: mark old appointment as RESCHEDULED + create new appointment
     //     Uses a transaction to avoid inconsistent state
-    const queryRunner =
-      this.appointmentRepo.manager.connection.createQueryRunner();
+    // Fix 4: DataSource.createQueryRunner() — modern TypeORM style
+    const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
@@ -505,6 +619,16 @@ export class AppointmentService {
       const saved = await queryRunner.manager.save(newAppointment);
 
       await queryRunner.commitTransaction();
+
+      // Fix 1: Notification failure appointment ko fail nahi karega
+      const rescheduledNotif = buildAppointmentNotification('rescheduled to', appointment.doctor.fullName, dto.date, dto.startTime);
+      await this.sendNotification(
+        patient.id,
+        'Appointment Rescheduled',
+        rescheduledNotif.message,
+        NotificationType.APPOINTMENT_RESCHEDULED,
+        rescheduledNotif.note,
+      );
 
       // Re-fetch with relations for response
       const fullAppointment = await this.appointmentRepo.findOne({
@@ -536,12 +660,7 @@ export class AppointmentService {
   // ─── 4. Doctor Appointment View ───────────────────────────────────────────────
 
   async getDoctorAppointments(userId: string, date?: string) {
-    const doctor = await this.doctorRepo.findOne({ where: { userId } });
-    if (!doctor) {
-      throw new NotFoundException(
-        'Doctor profile not found. Please create your profile first.',
-      );
-    }
+    const doctor = await this.getDoctorByUserId(userId);
 
     const whereClause: any = {
       doctorId: doctor.id,
@@ -577,12 +696,7 @@ export class AppointmentService {
   // ─── 4.5. Doctor Cancel Appointment ───────────────────────────────────────────
 
   async cancelAppointmentByDoctor(userId: string, appointmentId: string) {
-    const doctor = await this.doctorRepo.findOne({ where: { userId } });
-    if (!doctor) {
-      throw new NotFoundException(
-        'Doctor profile not found. Please create your profile first.',
-      );
-    }
+    const doctor = await this.getDoctorByUserId(userId);
 
     // Find appointment
     const appointment = await this.appointmentRepo.findOne({
@@ -612,6 +726,16 @@ export class AppointmentService {
     appointment.status = AppointmentStatus.CANCELLED;
     const saved = await this.appointmentRepo.save(appointment);
 
+    // Fix 1: Notification failure appointment ko fail nahi karega
+    const doctorCancelNotif = buildAppointmentNotification('cancelled by the doctor', appointment.doctor.fullName, appointment.date, appointment.startTime);
+    await this.sendNotification(
+      appointment.patientId,
+      'Appointment Cancelled by Doctor',
+      doctorCancelNotif.message,
+      NotificationType.APPOINTMENT_CANCELLED,
+      doctorCancelNotif.note,
+    );
+
     return {
       message: 'Appointment cancelled successfully',
       data: this.toDoctorAppointmentResponse(saved),
@@ -621,12 +745,7 @@ export class AppointmentService {
   // ─── 5. Patient Dashboard Stats ───────────────────────────────────────────────
 
   async getPatientDashboardStats(userId: string) {
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
+    const patient = await this.getPatientByUserId(userId);
 
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
@@ -645,15 +764,16 @@ export class AppointmentService {
       .where('appointment.patientId = :patientId', { patientId: patient.id })
       .andWhere('appointment.date < :today', { today: todayStr })
       .getCount();
-
     return {
-      upcomingAppointments,
-      pastAppointments,
-      prescriptions: 0,
+      message: 'Dashboard statistics retrieved successfully',
+      data: {
+        upcomingAppointments,
+        pastAppointments,
+      },
     };
   }
 
-  // ─── Private Helpers ──────────────────────────────────────────────────────────
+  // ─── Private Validators ───────────────────────────────────────────────────────
 
   /**
    * Validate that the appointment date/time is in the future.
@@ -704,7 +824,6 @@ export class AppointmentService {
     availableCount?: number;
   }> {
     try {
-      // Get available slots (this already filters out booked ones)
       const availableSlots = await this.availabilityService.getAvailableSlots(
         doctorId,
         date,
@@ -730,7 +849,7 @@ export class AppointmentService {
       if (error instanceof BadRequestException) {
         throw error;
       }
-      // NotFoundException from getAvailableSlots means no availability
+
       if (error instanceof NotFoundException) {
         throw new BadRequestException(
           `No available slots found for this doctor on ${date}`,
@@ -740,9 +859,6 @@ export class AppointmentService {
     }
   }
 
-  /**
-   * Validate that the appointment has not already passed (for cancellation).
-   */
   private validateCancelCutoff(date: string, startTime: string): void {
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
@@ -763,18 +879,14 @@ export class AppointmentService {
         throw new BadRequestException('Cannot cancel a past appointment');
       }
 
-      if (minutesUntilAppointment < 30) {
+      if (minutesUntilAppointment < CANCEL_CUTOFF_MINUTES) {
         throw new BadRequestException(
-          'Cannot cancel appointment: less than 30 minutes before the appointment start time',
+          `Cannot cancel appointment: less than ${CANCEL_CUTOFF_MINUTES} minutes before the appointment start time`,
         );
       }
     }
   }
 
-  /**
-   * Validate the 30-minute cutoff rule for rescheduling.
-   * Patients cannot reschedule if less than 30 minutes remain before the appointment.
-   */
   private validateRescheduleCutoff(date: string, startTime: string): void {
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
@@ -795,9 +907,9 @@ export class AppointmentService {
         throw new BadRequestException('Cannot reschedule a past appointment');
       }
 
-      if (minutesUntilAppointment < 30) {
+      if (minutesUntilAppointment < RESCHEDULE_CUTOFF_MINUTES) {
         throw new BadRequestException(
-          'Cannot reschedule appointment: less than 30 minutes before the appointment start time',
+          `Cannot reschedule appointment: less than ${RESCHEDULE_CUTOFF_MINUTES} minutes before the appointment start time`,
         );
       }
     }
@@ -816,11 +928,11 @@ export class AppointmentService {
       ...(appointment.tokenNumber !== null && { tokenNumber: appointment.tokenNumber }),
       doctor: appointment.doctor
         ? {
-            id: appointment.doctor.id,
-            fullName: appointment.doctor.fullName,
-            specialization: appointment.doctor.specialization,
-            consultationFee: Number(appointment.doctor.consultationFee),
-          }
+          id: appointment.doctor.id,
+          fullName: appointment.doctor.fullName,
+          specialization: appointment.doctor.specialization,
+          consultationFee: Number(appointment.doctor.consultationFee),
+        }
         : null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
@@ -841,15 +953,16 @@ export class AppointmentService {
       ...(appointment.tokenNumber !== null && { tokenNumber: appointment.tokenNumber }),
       patient: appointment.patient
         ? {
-            id: appointment.patient.id,
-            fullName: appointment.patient.fullName,
-            age: appointment.patient.age,
-            gender: appointment.patient.gender,
-            phone: appointment.patient.phone,
-          }
+          id: appointment.patient.id,
+          fullName: appointment.patient.fullName,
+          age: appointment.patient.age,
+          gender: appointment.patient.gender,
+          phone: appointment.patient.phone,
+        }
         : null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
     };
   }
 }
+
