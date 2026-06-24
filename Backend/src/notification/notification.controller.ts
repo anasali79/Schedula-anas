@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Param, Query, UseGuards, ParseUUIDPipe, BadRequestException } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -25,7 +25,15 @@ export class NotificationController {
   @Patch(':id/read')
   markAsRead(
     @CurrentUser() user: { id: string },
-    @Param('id') id: string,
+    @Param(
+      'id',
+      new ParseUUIDPipe({
+        version: '4',
+        exceptionFactory: () =>
+          new BadRequestException('Invalid notification ID format'),
+      }),
+    )
+    id: string,
   ) {
     return this.notificationService.markAsRead(user.id, id);
   }

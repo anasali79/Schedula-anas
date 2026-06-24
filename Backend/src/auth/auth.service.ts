@@ -8,12 +8,14 @@ import * as bcrypt from 'bcryptjs';
 import { UsersService } from '../users/users.service';
 import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private usersService: UsersService,
     private jwtService: JwtService,
+    private emailService: EmailService,
   ) {}
 
   async signup(signupDto: SignupDto) {
@@ -39,6 +41,10 @@ export class AuthService {
 
     // Generate token
     const token = this.generateToken(user.id, user.email, user.role);
+
+    // Send Welcome Email — HTML template is in EmailService
+    this.emailService.sendWelcomeEmail(user.email, user.name, user.role)
+      .catch((err) => console.error('Failed to send welcome email:', err));
 
     return {
       message: 'Signup successful',

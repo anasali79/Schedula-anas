@@ -54,7 +54,7 @@ export class PatientController {
         patientId: user.id,
         email: user.email,
         role: user.role,
-        stats,
+        ...stats.data,   // spread actual stats — avoids double-nesting
       },
     };
   }

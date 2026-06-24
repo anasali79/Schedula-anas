@@ -45,6 +45,9 @@ export class Appointment {
   @Column({ type: 'int', nullable: true, default: null })
   tokenNumber: number | null;
 
+  @Column({ type: 'boolean', default: false })
+  reminderSent: boolean;
+
   @CreateDateColumn()
   createdAt: Date;
 

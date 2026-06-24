@@ -1,6 +1,7 @@
 import {
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -64,16 +65,8 @@ export class NotificationService {
   async createNotification(
     patientId: string, title: string, message: string, type: NotificationType, note: string | null,
   ): Promise<Notification> {
-    const patientExists = await this.patientRepo.findOne({
-      where: { id: patientId },
-    });
-
-    if (!patientExists) {
-      throw new NotFoundException(
-        `Patient with ID ${patientId} not found. Cannot create notification.`,
-      );
-    }
-
+    // Note: patientId is always validated by the caller (AppointmentService)
+    // before this method is invoked — no redundant DB lookup needed here.
     const notification = this.notificationRepo.create({
       patientId,
       title,
@@ -106,8 +99,6 @@ export class NotificationService {
       take: limit,
     });
 
-    const unreadCount = notifications.filter((n) => !n.isRead).length;
-
     return {
       success: true,
       message:
@@ -117,7 +108,6 @@ export class NotificationService {
       data: notifications.map(formatNotification),
       meta: {
         total,
-        unreadCount,
         page,
         limit,
         totalPages: Math.ceil(total / limit),
@@ -146,11 +136,7 @@ export class NotificationService {
     }
 
     if (notification.isRead) {
-      return {
-        success: true,
-        message: 'Notification is already marked as read',
-        data: formatNotification(notification),
-      };
+      throw new BadRequestException('Notification is already marked as read');
     }
 
     notification.isRead = true;

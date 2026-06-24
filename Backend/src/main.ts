@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { RequestMethod, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
+import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -19,6 +20,9 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  // Global exception filter — consistent JSON error responses, no server crashes
+  app.useGlobalFilters(new GlobalExceptionFilter());
 
   app.enableCors({
     origin: process.env.CLIENT_URL || 'http://localhost:5173',
