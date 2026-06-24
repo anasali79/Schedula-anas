@@ -18,7 +18,7 @@ export class PatientController {
   constructor(
     private readonly patientService: PatientService,
     private readonly appointmentService: AppointmentService,
-  ) {}
+  ) { }
 
   @Post('profile')
   createProfile(
@@ -54,7 +54,7 @@ export class PatientController {
         patientId: user.id,
         email: user.email,
         role: user.role,
-        ...stats.data,   // spread actual stats — avoids double-nesting
+        ...stats.data,
       },
     };
   }

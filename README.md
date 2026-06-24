@@ -22,8 +22,15 @@ Schedula is a comprehensive doctor appointment booking application. This reposit
 - **Appointment Booking System:**
   - **Wave and Stream Strategies:** Advanced appointment queue management (e.g., token generation for Wave slots).
   - **Conflict Prevention:** Duplicate booking and overlapping schedule prevention.
+- **Email & Notification Engine:**
+  - **Brevo SMTP Integration:** Transactional emails for Welcome on Signup, Booking Confirmations, Cancellations, and Rescheduling. Includes fallback HTML-to-text parsers and elegant, responsive template layouts.
+  - **Automated Reminder Cron Jobs:** Morning (6 AM IST) and Evening (6 PM IST) reminder crons to patients for today's and tomorrow's appointments.
+  - **In-App Notifications:** Dedicated notification schema tracking patient alerts with paginated fetch, unread counts, and "mark all as read" capability.
 - **Dashboards:** Comprehensive Doctor and Patient dashboards with statistics.
-- **Data Integrity:** Strict input validation, error handling, and structured RESTful responses.
+- **Data Integrity & Standardized Date-Times:**
+  - **Timezone Consistency:** Built-in IST (`Asia/Kolkata`) utilities ensuring correct timezone calculation and cutoff checks regardless of local system environment.
+  - **Global Exception Filter:** Intercepts uncaught HTTP and internal server errors, sending a unified JSON error payload and preserving backend uptime.
+  - **Strict Validation:** Class-validator integration for payload schema and length verification (e.g., `@MaxLength(100)` for Signup fields).
 
 ---
 
@@ -55,6 +62,12 @@ DB_PORT=5432
 DB_USERNAME=postgres
 DB_PASSWORD=your_password
 DB_NAME=schedula
+
+# Brevo Email Integration
+BREVO_API_KEY=your_brevo_api_key_here
+BREVO_FROM_EMAIL=schedula.sh@gmail.com
+BREVO_FROM_NAME=Schedula
+APP_BASE_URL=http://localhost:5173
 ```
 
 ---

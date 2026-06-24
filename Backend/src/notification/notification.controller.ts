@@ -38,7 +38,6 @@ export class NotificationController {
     return this.notificationService.markAsRead(user.id, id);
   }
 
-  // Fix: Query params se page aur limit le rahe hain
   @Get()
   getNotifications(
     @CurrentUser() user: { id: string },

@@ -22,8 +22,6 @@ import { SlotStatus } from '../doctor/dto/availability.dto';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/enums/notification-type.enum';
 import { EmailService } from '../email/email.service';
-
-// Fix 5: Shared utils se import karo — duplicate functions hata diye
 import { formatTime, formatDate, getTodayIST, getTomorrowIST } from '../common/utils/appointment.utils';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -57,8 +55,6 @@ function buildAppointmentNotification(
   return { message, note };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
 @Injectable()
 export class AppointmentService {
   private readonly logger = new Logger(AppointmentService.name);
@@ -80,15 +76,11 @@ export class AppointmentService {
     private readonly emailService: EmailService,
     private readonly dataSource: DataSource,
   ) {
-    // Fix 1: setInterval constructor se hata diya — @Cron use karo
-    // Fix 2: checkAndSendAppointmentReminders bhi hata diya — 6AM/6PM cron hi kaafi hai
+
   }
-
-  // ─── Cron: 6 AM IST — Aaj ke appointments ka reminder ────────────────────────
-
   /**
-   * Fix 3: 6 AM IST — Aaj ke saare booked appointments ko morning reminder bhejo
-   * Fix 4: reminderSent = true update karo taaki dobara na bheje
+   * Sends morning reminders for all booked appointments today.
+   * Updates reminderSent flag to prevent duplicate notifications.
    */
   @Cron('0 6 * * *', { timeZone: 'Asia/Kolkata' })
   async sendMorningReminders(): Promise<void> {
@@ -102,7 +94,7 @@ export class AppointmentService {
         where: {
           date: todayStr,
           status: AppointmentStatus.BOOKED,
-          reminderSent: false, // Fix 4: sirf jinhe abhi tak reminder nahi gaya
+          reminderSent: false,
         },
         relations: { doctor: true, patient: { user: true } },
       });
@@ -139,7 +131,7 @@ export class AppointmentService {
           );
           this.logger.log(`[Cron 6AM] In-app notification sent to patient ${appt.patientId}`);
 
-          // Fix #6: Mark reminderSent AFTER successful send — prevents false-positive if send fails
+          // Mark reminderSent as true after successful send to prevent duplicates
           appt.reminderSent = true;
           await this.appointmentRepo.save(appt);
 
@@ -148,7 +140,7 @@ export class AppointmentService {
             `[Cron 6AM] Failed for appointment ${appt.id}: ${err.message}`,
             err.stack,
           );
-          // ek fail hone se baaki appointments rukni nahi chahiye — loop continue karo
+          // Continue processing remaining appointments if one fails
         }
       }
 
@@ -158,11 +150,8 @@ export class AppointmentService {
     }
   }
 
-  // ─── Cron: 6 PM IST — Kal ke appointments ka reminder ───────────────────────
-
   /**
-   * Fix 3: 6 PM IST — Kal ke saare booked appointments ko evening reminder bhejo
-   * Taaki patient raat ko hi aware ho jaye
+   * Sends evening reminders for tomorrow's booked appointments.
    */
   @Cron('0 18 * * *', { timeZone: 'Asia/Kolkata' })
   async sendEveningReminders(): Promise<void> {
@@ -176,8 +165,6 @@ export class AppointmentService {
         where: {
           date: tomorrowStr,
           status: AppointmentStatus.BOOKED,
-          // Note: evening reminder ke liye reminderSent check nahi karte
-          // kyunki yeh "kal ke liye" reminder hai — morning wala alag hoga
         },
         relations: { doctor: true, patient: { user: true } },
       });
@@ -281,10 +268,10 @@ export class AppointmentService {
         appt.date,
         appt.startTime,
         appt.tokenNumber,
-        '9999999999', // Fix #2: dummy contact — replace with real field when doctor entity has phone
+        '9999999999', // Dummy contact number
       );
     } catch (error) {
-      this.logger.error('Failed to send booking confirmation email:', error); // Fix #8
+      this.logger.error('Failed to send booking confirmation email:', error);
     }
   }
 
@@ -300,7 +287,7 @@ export class AppointmentService {
         appt.startTime,
       );
     } catch (error) {
-      this.logger.error('Failed to send cancellation email:', error); // Fix #8
+      this.logger.error('Failed to send cancellation email:', error);
     }
   }
 
@@ -324,7 +311,7 @@ export class AppointmentService {
         previousStartTime,
       );
     } catch (error) {
-      this.logger.error('Failed to send reschedule email:', error); // Fix #8
+      this.logger.error('Failed to send reschedule email:', error);
     }
   }
 
@@ -408,11 +395,11 @@ export class AppointmentService {
     });
 
     if (!fullAppointment) {
-      throw new NotFoundException('Appointment not found after save'); // Fix #3: safe null check
+      throw new NotFoundException('Appointment not found after save');
     }
 
     this.sendBookingEmail(fullAppointment).catch((err) =>
-      this.logger.error('Failed to send booking confirmation email:', err), // Fix #8
+      this.logger.error('Failed to send booking confirmation email:', err),
     );
 
     return {
@@ -454,7 +441,7 @@ export class AppointmentService {
     if (appointment.status === AppointmentStatus.CANCELLED) {
       throw new BadRequestException('This appointment is already cancelled');
     }
-    // Fix #5: rescheduled appointment bhi cancel nahi honi chahiye
+    // Do not allow cancelling rescheduled appointments
     if (appointment.status === AppointmentStatus.RESCHEDULED) {
       throw new BadRequestException('Cannot cancel an already rescheduled appointment');
     }
@@ -462,7 +449,7 @@ export class AppointmentService {
     this.validateCancelCutoff(appointment.date, appointment.startTime);
 
     appointment.status = AppointmentStatus.CANCELLED;
-    await this.appointmentRepo.save(appointment); // Fix #7: don't use saved — it lacks relations
+    await this.appointmentRepo.save(appointment);
 
     const cancelledNotif = buildAppointmentNotification('cancelled', appointment.doctor.fullName, appointment.date, appointment.startTime);
     await this.sendNotification(
@@ -474,12 +461,12 @@ export class AppointmentService {
     );
 
     this.sendCancellationEmail(appointment).catch((err) =>
-      this.logger.error('Failed to send cancellation email:', err), // Fix #8
+      this.logger.error('Failed to send cancellation email:', err),
     );
 
     return {
       message: 'Appointment cancelled successfully',
-      data: this.toPatientAppointmentResponse(appointment), // Fix #7: use appointment (has doctor relation)
+      data: this.toPatientAppointmentResponse(appointment),
     };
   }
 
@@ -768,12 +755,12 @@ export class AppointmentService {
   // ─── Private Validators ───────────────────────────────────────────────────────
 
   private validateFutureDateTime(date: string, startTime: string): void {
-    const todayStr = getTodayIST(); // Fix #9: use IST date consistently
+    const todayStr = getTodayIST();
 
     if (date < todayStr) throw new BadRequestException('Cannot book appointment for a past date');
 
     if (date === todayStr) {
-      // Fix #9: use IST time for comparison
+      // Use IST time for comparison
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
       const [h, m] = startTime.split(':').map(Number);
@@ -815,7 +802,7 @@ export class AppointmentService {
   }
 
   private validateCancelCutoff(date: string, startTime: string): void {
-    const todayStr = getTodayIST(); // Fix #9: IST-consistent date
+    const todayStr = getTodayIST();
 
     if (date < todayStr) throw new BadRequestException('Cannot cancel a past appointment');
 
@@ -834,7 +821,7 @@ export class AppointmentService {
   }
 
   private validateRescheduleCutoff(date: string, startTime: string): void {
-    const todayStr = getTodayIST(); // Fix #9: IST-consistent date
+    const todayStr = getTodayIST();
 
     if (date < todayStr) throw new BadRequestException('Cannot reschedule a past appointment');
 

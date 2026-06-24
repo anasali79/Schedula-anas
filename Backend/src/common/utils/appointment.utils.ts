@@ -1,6 +1,6 @@
 /**
  * Shared date/time formatting utilities
- * Use karo: appointment.service.ts, email.service.ts dono mein
+ * Used in appointment.service.ts and email.service.ts
  */
 
 /**

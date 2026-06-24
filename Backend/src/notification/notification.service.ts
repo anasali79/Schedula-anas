@@ -10,7 +10,7 @@ import { Notification } from './entities/notification.entity';
 import { Patient } from '../patient/entities/patient.entity';
 import { NotificationType } from './enums/notification-type.enum';
 
-// Fix: readable date format helper
+// Format date to readable string
 function formatDate(date: Date): string {
   return new Intl.DateTimeFormat('en-IN', {
     day: '2-digit',
@@ -23,7 +23,7 @@ function formatDate(date: Date): string {
   }).format(new Date(date));
 }
 
-// Fix: transform notification to include formatted date
+// Transform notification to include formatted date
 function formatNotification(notification: Notification) {
   return {
     ...notification,
@@ -60,13 +60,11 @@ export class NotificationService {
 
   /**
    * Internal helper to create notification
-   * @param patientId - must be a valid existing patient ID
+   * @param patientId
    */
   async createNotification(
     patientId: string, title: string, message: string, type: NotificationType, note: string | null,
   ): Promise<Notification> {
-    // Note: patientId is always validated by the caller (AppointmentService)
-    // before this method is invoked — no redundant DB lookup needed here.
     const notification = this.notificationRepo.create({
       patientId,
       title,
@@ -81,7 +79,6 @@ export class NotificationService {
 
   /**
    * Get all notifications for logged-in patient (with pagination)
-   * Fix: meta aur success field add kiya, date format readable
    */
   async getNotifications(
     userId: string,
@@ -117,7 +114,6 @@ export class NotificationService {
 
   /**
    * Mark a single notification as read
-   * Fix: already-read notifications handled gracefully
    */
   async markAsRead(userId: string, notificationId: string) {
     const patient = await this.getPatientByUserId(userId);

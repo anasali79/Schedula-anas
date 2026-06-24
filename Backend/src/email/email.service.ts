@@ -35,7 +35,7 @@ function buildHeader(title: string, titleColor: string): string {
   `;
 }
 
-//  3: Reusable footer with disclaimer + unsubscribe placeholder
+// Reusable footer with disclaimer and unsubscribe link
 function buildFooter(): string {
   return `
     <hr style="border: none; border-top: 1px solid #eeeeee; margin: 24px 0 16px 0;" />
@@ -56,7 +56,7 @@ function buildFooter(): string {
   `;
 }
 
-// 2: Reusable CTA button
+// Reusable CTA button
 function buildCtaButton(label: string, url: string, color: string): string {
   return `
     <div style="text-align: center; margin: 20px 0;">
@@ -97,7 +97,7 @@ export class EmailService {
    * Send an email using Brevo HTTP API
    */
   async sendEmail(to: string, subject: string, htmlContent: string): Promise<boolean> {
-    // Fix 5: plain text fallback generate karo
+    // Generate plain text fallback
     const textContent = htmlToPlainText(htmlContent);
 
     if (!this.apiKey || this.apiKey === 'your_brevo_api_key_here') {
@@ -120,7 +120,7 @@ export class EmailService {
           to: [{ email: to }],
           subject,
           htmlContent,
-          textContent, // Fix 5: plain text fallback
+          textContent, // plain text fallback
         }),
       });
 
@@ -267,7 +267,7 @@ export class EmailService {
               Your appointment has been successfully rescheduled. Here are your updated details:
             </p>
 
-            <!-- Fix 4: flex hata ke margin-based layout rakha (email client safe) -->
+            <!-- Clean layout compatible with email clients -->
             <div style="background-color: #e8f5e9; padding: 15px; border-radius: 4px; border-left: 4px solid #4caf50; margin-bottom: 12px;">
               <p style="margin: 0 0 5px 0; color: #2e7d32; font-weight: bold; font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase;">New Schedule</p>
               <p style="margin: 5px 0; color: #333333;"><strong>Doctor:</strong> ${doctorName} (${specialization})</p>
