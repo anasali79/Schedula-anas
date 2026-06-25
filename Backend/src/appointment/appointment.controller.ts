@@ -84,7 +84,6 @@ export class AppointmentController {
     return this.appointmentService.rescheduleAppointment(user.id, id, dto);
   }
 
-  // ─── 5. Test/Trigger Daily Reminders (Development/Admin/Testing) ────────────────
   // POST /api/appointment/test-reminders
   @Post('appointment/test-reminders')
   async triggerDailyReminders() {

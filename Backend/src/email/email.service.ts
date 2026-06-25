@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as QRCode from 'qrcode';
 
 import { formatTime, formatDate } from '../common/utils/appointment.utils';
 
@@ -164,6 +165,7 @@ export class EmailService {
     startTime: string,
     tokenNumber: number | null,
     contactnumber: string | null,
+    appointmentId: string,
   ): Promise<boolean> {
     const formattedDate = formatDate(date);
     const formattedTime = formatTime(startTime);
@@ -172,6 +174,29 @@ export class EmailService {
     const contactMsg = contactnumber
       ? `<p style="margin: 5px 0; color: #333333;"><strong>Contact:</strong> ${contactnumber}</p>`
       : '';
+
+    // Generate QR code as a Base64 data URL — payload contains only appointmentId
+    let qrImageTag = '';
+    try {
+      const qrPayload = JSON.stringify({ appointmentId });
+      const qrDataUrl = await QRCode.toDataURL(qrPayload, {
+        width: 180,
+        margin: 2,
+        color: { dark: '#1a6b3c', light: '#ffffff' },
+      });
+      qrImageTag = `
+        <div style="text-align: center; margin: 20px 0;">
+          <p style="margin: 0 0 8px 0; color: #333333; font-weight: bold;">Your Check-In QR Code</p>
+          <img src="${qrDataUrl}" alt="Appointment QR Code"
+               width="180" height="180"
+               style="border: 2px solid #1a6b3c; border-radius: 8px; display: block; margin: 0 auto;" />
+          <p style="margin: 8px 0 0 0; font-size: 12px; color: #9e9e9e;">
+            Present this QR code at the clinic reception to check in.
+          </p>
+        </div>`;
+    } catch (err) {
+      this.logger.warn('Failed to generate QR code for booking email:', err);
+    }
 
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
@@ -192,6 +217,7 @@ export class EmailService {
             <p style="color: #555555; line-height: 1.5; font-size: 15px;">
               Please arrive <strong>5 minutes</strong> before your scheduled time.
             </p>
+            ${qrImageTag}
           </div>
           ${buildCtaButton('View My Appointments', `${this.appBaseUrl}/appointments`, '#2e7d32')}
         </div>

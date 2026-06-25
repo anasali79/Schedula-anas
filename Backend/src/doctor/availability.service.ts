@@ -270,7 +270,8 @@ export class AvailabilityService {
             (app) =>
               app.startTime === override.startTime &&
               app.endTime === override.endTime &&
-              app.status === 'BOOKED',
+              app.status !== AppointmentStatus.CANCELLED &&
+              app.status !== AppointmentStatus.RESCHEDULED,
           ).length;
           const maxPatients = override.maxPatients || 0;
           const availableCount = Math.max(0, maxPatients - bookedCount);
@@ -378,7 +379,8 @@ export class AvailabilityService {
                   (app) =>
                     app.startTime === s.startTime &&
                     app.endTime === s.endTime &&
-                    app.status === 'BOOKED',
+                    app.status !== AppointmentStatus.CANCELLED &&
+                    app.status !== AppointmentStatus.RESCHEDULED,
                 ).length;
                 const maxPatients = s.maxPatients || 0;
                 const availableCount = Math.max(0, maxPatients - bookedCount);
@@ -583,7 +585,7 @@ export class AvailabilityService {
           date,
           startTime,
           endTime,
-          status: AppointmentStatus.BOOKED,
+          status: AppointmentStatus.CONFIRMED,
         },
       });
     } else {
@@ -610,7 +612,7 @@ export class AvailabilityService {
         where: {
           doctorId: doctor.id,
           date,
-          status: AppointmentStatus.BOOKED,
+          status: AppointmentStatus.CONFIRMED,
         },
       });
     }
@@ -653,8 +655,8 @@ export class AvailabilityService {
             .andWhere('appointment.endTime = :endTime', {
               endTime: nextSlot.endTime,
             })
-            .andWhere('appointment.status IN (:...statuses)', {
-              statuses: [AppointmentStatus.BOOKED],
+            .andWhere('appointment.status NOT IN (:...statuses)', {
+              statuses: [AppointmentStatus.CANCELLED, AppointmentStatus.RESCHEDULED],
             })
             .getRawOne();
 
@@ -862,7 +864,8 @@ export class AvailabilityService {
               (app) =>
                 app.startTime === s.startTime &&
                 app.endTime === s.endTime &&
-                app.status === 'BOOKED',
+                app.status !== AppointmentStatus.CANCELLED &&
+                app.status !== AppointmentStatus.RESCHEDULED,
             ).length;
             const maxPatients = s.maxPatients || 0;
             const availableCount = Math.max(0, maxPatients - bookedCount);
@@ -934,7 +937,8 @@ export class AvailabilityService {
               (app) =>
                 app.startTime === s.startTime &&
                 app.endTime === s.endTime &&
-                app.status === 'BOOKED',
+                app.status !== AppointmentStatus.CANCELLED &&
+                app.status !== AppointmentStatus.RESCHEDULED,
             ).length;
             const maxPatients = s.maxPatients || 0;
             const availableCount = Math.max(0, maxPatients - bookedCount);
@@ -1025,7 +1029,9 @@ export class AvailabilityService {
         return slotStart < appEnd && appStart < slotEnd;
       });
 
-      const bookedApp = overlapping.find((a) => a.status === 'BOOKED');
+      const bookedApp = overlapping.find(
+        (a) => a.status !== AppointmentStatus.CANCELLED && a.status !== AppointmentStatus.RESCHEDULED,
+      );
       if (bookedApp) return { ...slot, status: SlotStatus.BOOKED };
 
       const cancelledApp = overlapping.find((a) => a.status === 'CANCELLED');
@@ -1303,7 +1309,8 @@ export class AvailabilityService {
           (app) =>
             app.startTime === slot.startTime &&
             app.endTime === slot.endTime &&
-            app.status === 'BOOKED',
+            app.status !== AppointmentStatus.CANCELLED &&
+            app.status !== AppointmentStatus.RESCHEDULED,
         ).length;
 
         const maxPatients = slot.maxPatients || 0;
@@ -1329,7 +1336,7 @@ export class AvailabilityService {
       });
 
       const bookedApp = overlappingAppointments.find(
-        (a) => a.status === 'BOOKED',
+        (a) => a.status !== AppointmentStatus.CANCELLED && a.status !== AppointmentStatus.RESCHEDULED,
       );
       if (bookedApp) {
         return { ...slot, status: SlotStatus.BOOKED };

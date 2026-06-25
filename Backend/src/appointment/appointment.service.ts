@@ -7,6 +7,7 @@ import {
   forwardRef,
   Inject,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, DataSource } from 'typeorm';
@@ -23,6 +24,7 @@ import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/enums/notification-type.enum';
 import { EmailService } from '../email/email.service';
 import { formatTime, formatDate, getTodayIST, getTomorrowIST } from '../common/utils/appointment.utils';
+import { AppointmentGateway, SOCKET_EVENTS } from '../sockets/appointment.gateway';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -75,6 +77,9 @@ export class AppointmentService {
     private readonly notificationService: NotificationService,
     private readonly emailService: EmailService,
     private readonly dataSource: DataSource,
+
+    @Optional()
+    private readonly appointmentGateway: AppointmentGateway,
   ) {
 
   }
@@ -93,7 +98,7 @@ export class AppointmentService {
       const appointments = await this.appointmentRepo.find({
         where: {
           date: todayStr,
-          status: AppointmentStatus.BOOKED,
+          status: AppointmentStatus.CONFIRMED,
           reminderSent: false,
         },
         relations: { doctor: true, patient: { user: true } },
@@ -164,7 +169,7 @@ export class AppointmentService {
       const appointments = await this.appointmentRepo.find({
         where: {
           date: tomorrowStr,
-          status: AppointmentStatus.BOOKED,
+          status: AppointmentStatus.CONFIRMED,
         },
         relations: { doctor: true, patient: { user: true } },
       });
@@ -269,6 +274,7 @@ export class AppointmentService {
         appt.startTime,
         appt.tokenNumber,
         '9999999999', // Dummy contact number
+        appt.id,
       );
     } catch (error) {
       this.logger.error('Failed to send booking confirmation email:', error);
@@ -332,7 +338,7 @@ export class AppointmentService {
         patientId: patient.id,
         doctorId: dto.doctorId,
         date: dto.date,
-        status: AppointmentStatus.BOOKED,
+        status: AppointmentStatus.CONFIRMED,
       },
     });
     if (patientHasBookingOnDay) {
@@ -350,7 +356,7 @@ export class AppointmentService {
           date: dto.date,
           startTime: dto.startTime,
           endTime: dto.endTime,
-          status: AppointmentStatus.BOOKED,
+          status: AppointmentStatus.CONFIRMED,
         },
       });
       if (existingBooking) throw new ConflictException('This slot is already booked');
@@ -375,7 +381,7 @@ export class AppointmentService {
       date: dto.date,
       startTime: dto.startTime,
       endTime: dto.endTime,
-      status: AppointmentStatus.BOOKED,
+      status: AppointmentStatus.CONFIRMED,
       tokenNumber,
     });
 
@@ -450,6 +456,18 @@ export class AppointmentService {
 
     appointment.status = AppointmentStatus.CANCELLED;
     await this.appointmentRepo.save(appointment);
+
+    // ── Emit real-time Socket.IO event ───────────────────────────────────────
+    this.appointmentGateway?.emitAppointmentEvent(
+      SOCKET_EVENTS.CANCELLED,
+      {
+        appointmentId: appointment.id,
+        patientId:     appointment.patientId,
+        doctorId:      appointment.doctorId,
+        status:        AppointmentStatus.CANCELLED,
+        updatedAt:     new Date().toISOString(),
+      },
+    );
 
     const cancelledNotif = buildAppointmentNotification('cancelled', appointment.doctor.fullName, appointment.date, appointment.startTime);
     await this.sendNotification(
@@ -550,7 +568,7 @@ export class AppointmentService {
           date: dto.date,
           startTime: dto.startTime,
           endTime: dto.endTime,
-          status: AppointmentStatus.BOOKED,
+          status: AppointmentStatus.CONFIRMED,
         },
       });
       if (existingBooking) {
@@ -569,7 +587,7 @@ export class AppointmentService {
         patientId: patient.id,
         doctorId: appointment.doctorId,
         date: dto.date,
-        status: AppointmentStatus.BOOKED,
+        status: AppointmentStatus.CONFIRMED,
         id: Not(appointmentId),
       },
     });
@@ -609,7 +627,7 @@ export class AppointmentService {
         date: dto.date,
         startTime: dto.startTime,
         endTime: dto.endTime,
-        status: AppointmentStatus.BOOKED,
+        status: AppointmentStatus.CONFIRMED,
         tokenNumber,
       });
 
@@ -707,6 +725,18 @@ export class AppointmentService {
     appointment.status = AppointmentStatus.CANCELLED;
     const saved = await this.appointmentRepo.save(appointment);
 
+    // ── Emit real-time Socket.IO event ───────────────────────────────────────
+    this.appointmentGateway?.emitAppointmentEvent(
+      SOCKET_EVENTS.CANCELLED,
+      {
+        appointmentId: appointment.id,
+        patientId:     appointment.patientId,
+        doctorId:      appointment.doctorId,
+        status:        AppointmentStatus.CANCELLED,
+        updatedAt:     new Date().toISOString(),
+      },
+    );
+
     const doctorCancelNotif = buildAppointmentNotification('cancelled by the doctor', appointment.doctor.fullName, appointment.date, appointment.startTime);
     await this.sendNotification(
       appointment.patientId,
@@ -737,7 +767,7 @@ export class AppointmentService {
       .createQueryBuilder('appointment')
       .where('appointment.patientId = :patientId', { patientId: patient.id })
       .andWhere('appointment.date >= :today', { today: todayStr })
-      .andWhere('appointment.status = :status', { status: AppointmentStatus.BOOKED })
+      .andWhere('appointment.status = :status', { status: AppointmentStatus.CONFIRMED })
       .getCount();
 
     const pastAppointments = await this.appointmentRepo
@@ -855,6 +885,7 @@ export class AppointmentService {
           consultationFee: Number(appointment.doctor.consultationFee),
         }
         : null,
+      checkedInAt: appointment.checkedInAt ?? null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
     };
@@ -878,6 +909,7 @@ export class AppointmentService {
           phone: appointment.patient.phone,
         }
         : null,
+      checkedInAt: appointment.checkedInAt ?? null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
     };
