@@ -7,13 +7,14 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Appointment } from '../appointment/entities/appointment.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 import { getTodayIST } from '../common/utils/appointment.utils';
 import { AppointmentGateway, SOCKET_EVENTS } from '../sockets/appointment.gateway';
+import { QueueService } from '../appointment/queue.service';
 
 @Injectable()
 export class CheckInService {
@@ -27,9 +28,12 @@ export class CheckInService {
     @InjectRepository(Patient)
     private readonly patientRepo: Repository<Patient>,
 
+    private readonly queueService: QueueService,
+    private readonly dataSource: DataSource,
+
     @Optional()
     private readonly appointmentGateway: AppointmentGateway,
-  ) {}
+  ) { }
 
   // ─── Private Helpers ──────────────────────────────────────────────────────────
 
@@ -130,36 +134,53 @@ export class CheckInService {
       throw new BadRequestException('Appointment expired');
     }
 
-    // ── Atomic update — race condition protection ─────────────────────────────
-    // Only update if status is still CONFIRMED; prevents duplicate check-ins
-    // from concurrent requests (e.g. double QR scan, network retry).
-    const result = await this.appointmentRepo
-      .createQueryBuilder()
-      .update(Appointment)
-      .set({
-        status: AppointmentStatus.CHECKED_IN,
-        checkedInAt: new Date(),
-      })
-      .where('id = :id', { id: appointment.id })
-      .andWhere('status = :status', { status: AppointmentStatus.CONFIRMED })
-      .execute();
+    // ── Transaction-based check-in and queue recalculation ───────────────────
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    if (!result.affected || result.affected === 0) {
-      // A concurrent request already checked in — treat as duplicate
-      throw new ConflictException('Patient already checked in');
+    let app: Appointment | null = null;
+    try {
+      app = await queryRunner.manager
+        .createQueryBuilder(Appointment, 'a')
+        .where('a.id = :id', { id: appointment.id })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!app || app.status !== AppointmentStatus.CONFIRMED) {
+        throw new ConflictException('Patient already checked in or status changed');
+      }
+
+      // Update check-in properties
+      app.status = AppointmentStatus.CHECKED_IN;
+      app.checkedInAt = new Date();
+      await queryRunner.manager.save(app);
+
+      // Recalculate queue position and wait times
+      await this.queueService.recalculateQueue(app.doctorId, app.date, queryRunner.manager);
+
+      await queryRunner.commitTransaction();
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
 
-    // ── Emit real-time Socket.IO event ───────────────────────────────────────
+    // ── Post-commit side effects (outside transaction) ────────────────────────
+    // These run only if commit succeeded. Errors here will NOT cause a rollback.
     this.appointmentGateway?.emitAppointmentEvent(
       SOCKET_EVENTS.CHECKED_IN,
       {
-        appointmentId: appointment.id,
-        patientId:     appointment.patientId,
-        doctorId:      appointment.doctorId,
+        appointmentId: app!.id,
+        patientId:     app!.patientId,
+        doctorId:      app!.doctorId,
         status:        AppointmentStatus.CHECKED_IN,
-        updatedAt:     new Date().toISOString(),
+        updatedAt:     app!.checkedInAt!.toISOString(),
       },
     );
+
+    await this.queueService.broadcastQueueStatus(app!.doctorId, app!.date, this.dataSource.manager);
 
     return {
       success: true,
@@ -172,47 +193,76 @@ export class CheckInService {
   async startConsultation(userId: string, appointmentId: string) {
     const doctor = await this.getDoctorByUserId(userId);
 
-    const appointment = await this.appointmentRepo.findOne({
-      where: { id: appointmentId },
-    });
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    if (!appointment) {
-      throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
+    let appointment: Appointment | null = null;
+    try {
+      appointment = await queryRunner.manager
+        .createQueryBuilder(Appointment, 'a')
+        .where('a.id = :id', { id: appointmentId })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!appointment) {
+        throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
+      }
+
+      if (appointment.doctorId !== doctor.id) {
+        throw new ForbiddenException('You are not authorized to manage this appointment');
+      }
+
+      if (appointment.status !== AppointmentStatus.CHECKED_IN) {
+        throw new BadRequestException(
+          `Cannot start consultation. Appointment status is ${appointment.status}, expected CHECKED_IN.`,
+        );
+      }
+
+      // Auto-complete any existing IN_CONSULTATION appointment to prevent conflicts
+      const activeConsultations = await queryRunner.manager
+        .createQueryBuilder(Appointment, 'a')
+        .where('a.doctorId = :doctorId', { doctorId: doctor.id })
+        .andWhere('a.date = :date', { date: appointment.date })
+        .andWhere('a.status = :status', { status: AppointmentStatus.IN_CONSULTATION })
+        .setLock('pessimistic_write')
+        .getMany();
+
+      for (const app of activeConsultations) {
+        app.status = AppointmentStatus.COMPLETED;
+        app.completedAt = new Date();
+        await queryRunner.manager.save(app);
+      }
+
+      // Start the consultation
+      appointment.status = AppointmentStatus.IN_CONSULTATION;
+      appointment.servedAt = new Date();
+      await queryRunner.manager.save(appointment);
+
+      // Recalculate queue
+      await this.queueService.recalculateQueue(doctor.id, appointment.date, queryRunner.manager);
+
+      await queryRunner.commitTransaction();
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
 
-    if (appointment.doctorId !== doctor.id) {
-      throw new ForbiddenException('You are not authorized to manage this appointment');
-    }
-
-    if (appointment.status !== AppointmentStatus.CHECKED_IN) {
-      throw new BadRequestException(
-        `Cannot start consultation. Appointment status is ${appointment.status}, expected CHECKED_IN.`,
-      );
-    }
-
-    const result = await this.appointmentRepo
-      .createQueryBuilder()
-      .update(Appointment)
-      .set({ status: AppointmentStatus.IN_CONSULTATION })
-      .where('id = :id', { id: appointment.id })
-      .andWhere('status = :status', { status: AppointmentStatus.CHECKED_IN })
-      .execute();
-
-    if (!result.affected || result.affected === 0) {
-      throw new ConflictException('Failed to start consultation: status might have changed.');
-    }
-
-    // ── Emit real-time Socket.IO event ───────────────────────────────────────
+    // ── Post-commit side effects ──────────────────────────────────────────────
     this.appointmentGateway?.emitAppointmentEvent(
       SOCKET_EVENTS.CONSULTATION_STARTED,
       {
-        appointmentId: appointment.id,
-        patientId:     appointment.patientId,
-        doctorId:      appointment.doctorId,
+        appointmentId: appointment!.id,
+        patientId:     appointment!.patientId,
+        doctorId:      appointment!.doctorId,
         status:        AppointmentStatus.IN_CONSULTATION,
-        updatedAt:     new Date().toISOString(),
+        updatedAt:     appointment!.servedAt!.toISOString(),
       },
     );
+
+    await this.queueService.broadcastQueueStatus(doctor.id, appointment!.date, this.dataSource.manager);
 
     return {
       success: true,
@@ -225,47 +275,102 @@ export class CheckInService {
   async completeAppointment(userId: string, appointmentId: string) {
     const doctor = await this.getDoctorByUserId(userId);
 
-    const appointment = await this.appointmentRepo.findOne({
-      where: { id: appointmentId },
-    });
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    if (!appointment) {
-      throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
+    let appointment: Appointment | null = null;
+    let nextApp: Appointment | undefined;
+    try {
+      appointment = await queryRunner.manager
+        .createQueryBuilder(Appointment, 'a')
+        .where('a.id = :id', { id: appointmentId })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!appointment) {
+        throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
+      }
+
+      if (appointment.doctorId !== doctor.id) {
+        throw new ForbiddenException('You are not authorized to manage this appointment');
+      }
+
+      if (appointment.status !== AppointmentStatus.IN_CONSULTATION) {
+        throw new BadRequestException(
+          `Cannot complete appointment. Appointment status is ${appointment.status}, expected IN_CONSULTATION.`,
+        );
+      }
+
+      // 1. Complete the current appointment
+      appointment.status = AppointmentStatus.COMPLETED;
+      appointment.completedAt = new Date();
+      await queryRunner.manager.save(appointment);
+
+      // 2. Auto trigger moveNextToken (find the next checked-in appointment to serve)
+      const checkedInAppointments = await queryRunner.manager
+        .createQueryBuilder(Appointment, 'a')
+        .where('a.doctorId = :doctorId', { doctorId: doctor.id })
+        .andWhere('a.date = :date', { date: appointment.date })
+        .andWhere('a.status = :status', { status: AppointmentStatus.CHECKED_IN })
+        .setLock('pessimistic_write')
+        .getMany();
+
+      if (checkedInAppointments.length > 0) {
+        checkedInAppointments.sort((a, b) => {
+          const timeA = a.checkedInAt ? new Date(a.checkedInAt).getTime() : 0;
+          const timeB = b.checkedInAt ? new Date(b.checkedInAt).getTime() : 0;
+          if (timeA !== timeB) return timeA - timeB;
+
+          if (a.tokenNumber !== null && b.tokenNumber !== null) {
+            return a.tokenNumber - b.tokenNumber;
+          }
+          return a.startTime.localeCompare(b.startTime);
+        });
+
+        nextApp = checkedInAppointments[0];
+        nextApp.status = AppointmentStatus.IN_CONSULTATION;
+        nextApp.servedAt = new Date();
+        await queryRunner.manager.save(nextApp);
+      }
+
+      // 3. Recalculate queue
+      await this.queueService.recalculateQueue(doctor.id, appointment.date, queryRunner.manager);
+
+      await queryRunner.commitTransaction();
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
 
-    if (appointment.doctorId !== doctor.id) {
-      throw new ForbiddenException('You are not authorized to manage this appointment');
-    }
-
-    if (appointment.status !== AppointmentStatus.IN_CONSULTATION) {
-      throw new BadRequestException(
-        `Cannot complete appointment. Appointment status is ${appointment.status}, expected IN_CONSULTATION.`,
-      );
-    }
-
-    const result = await this.appointmentRepo
-      .createQueryBuilder()
-      .update(Appointment)
-      .set({ status: AppointmentStatus.COMPLETED })
-      .where('id = :id', { id: appointment.id })
-      .andWhere('status = :status', { status: AppointmentStatus.IN_CONSULTATION })
-      .execute();
-
-    if (!result.affected || result.affected === 0) {
-      throw new ConflictException('Failed to complete appointment: status might have changed.');
-    }
-
-    // ── Emit real-time Socket.IO event ───────────────────────────────────────
+    // ── Post-commit side effects ──────────────────────────────────────────────
     this.appointmentGateway?.emitAppointmentEvent(
       SOCKET_EVENTS.COMPLETED,
       {
-        appointmentId: appointment.id,
-        patientId:     appointment.patientId,
-        doctorId:      appointment.doctorId,
+        appointmentId: appointment!.id,
+        patientId:     appointment!.patientId,
+        doctorId:      appointment!.doctorId,
         status:        AppointmentStatus.COMPLETED,
-        updatedAt:     new Date().toISOString(),
+        updatedAt:     appointment!.completedAt!.toISOString(),
       },
     );
+
+    if (nextApp) {
+      this.appointmentGateway?.emitAppointmentEvent(
+        SOCKET_EVENTS.CONSULTATION_STARTED,
+        {
+          appointmentId: nextApp.id,
+          patientId:     nextApp.patientId,
+          doctorId:      nextApp.doctorId,
+          status:        AppointmentStatus.IN_CONSULTATION,
+          updatedAt:     nextApp.servedAt!.toISOString(),
+        },
+      );
+    }
+
+    await this.queueService.broadcastQueueStatus(doctor.id, appointment!.date, this.dataSource.manager);
 
     return {
       success: true,
@@ -278,57 +383,68 @@ export class CheckInService {
   async markNoShow(userId: string, appointmentId: string) {
     const doctor = await this.getDoctorByUserId(userId);
 
-    const appointment = await this.appointmentRepo.findOne({
-      where: { id: appointmentId },
-    });
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    if (!appointment) {
-      throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
+    let appointment: Appointment | null = null;
+    try {
+      appointment = await queryRunner.manager
+        .createQueryBuilder(Appointment, 'a')
+        .where('a.id = :id', { id: appointmentId })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!appointment) {
+        throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
+      }
+
+      if (appointment.doctorId !== doctor.id) {
+        throw new ForbiddenException('You are not authorized to manage this appointment');
+      }
+
+      if (
+        appointment.status !== AppointmentStatus.CONFIRMED &&
+        appointment.status !== AppointmentStatus.CHECKED_IN
+      ) {
+        throw new BadRequestException(
+          `Cannot mark appointment as no-show. Status is ${appointment.status}, expected CONFIRMED or CHECKED_IN.`,
+        );
+      }
+
+      const todayStr = getTodayIST();
+      if (appointment.date > todayStr) {
+        throw new BadRequestException('Cannot mark a future appointment as no-show');
+      }
+
+      // Mark status as no-show
+      appointment.status = AppointmentStatus.NO_SHOW;
+      await queryRunner.manager.save(appointment);
+
+      // Recalculate queue
+      await this.queueService.recalculateQueue(doctor.id, appointment.date, queryRunner.manager);
+
+      await queryRunner.commitTransaction();
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
 
-    if (appointment.doctorId !== doctor.id) {
-      throw new ForbiddenException('You are not authorized to manage this appointment');
-    }
-
-    if (
-      appointment.status !== AppointmentStatus.CONFIRMED &&
-      appointment.status !== AppointmentStatus.CHECKED_IN
-    ) {
-      throw new BadRequestException(
-        `Cannot mark appointment as no-show. Status is ${appointment.status}, expected CONFIRMED or CHECKED_IN.`,
-      );
-    }
-
-    const todayStr = getTodayIST();
-    if (appointment.date > todayStr) {
-      throw new BadRequestException('Cannot mark a future appointment as no-show');
-    }
-
-    const result = await this.appointmentRepo
-      .createQueryBuilder()
-      .update(Appointment)
-      .set({ status: AppointmentStatus.NO_SHOW })
-      .where('id = :id', { id: appointment.id })
-      .andWhere('status IN (:...statuses)', {
-        statuses: [AppointmentStatus.CONFIRMED, AppointmentStatus.CHECKED_IN],
-      })
-      .execute();
-
-    if (!result.affected || result.affected === 0) {
-      throw new ConflictException('Failed to mark as no-show: status might have changed.');
-    }
-
-    // ── Emit real-time Socket.IO event ───────────────────────────────────────
+    // ── Post-commit side effects ──────────────────────────────────────────────
     this.appointmentGateway?.emitAppointmentEvent(
       SOCKET_EVENTS.NO_SHOW,
       {
-        appointmentId: appointment.id,
-        patientId:     appointment.patientId,
-        doctorId:      appointment.doctorId,
+        appointmentId: appointment!.id,
+        patientId:     appointment!.patientId,
+        doctorId:      appointment!.doctorId,
         status:        AppointmentStatus.NO_SHOW,
         updatedAt:     new Date().toISOString(),
       },
     );
+
+    await this.queueService.broadcastQueueStatus(doctor.id, appointment!.date, this.dataSource.manager);
 
     return {
       success: true,

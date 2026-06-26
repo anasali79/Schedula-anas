@@ -70,8 +70,7 @@ export const buildPatientRoom = (patientId: string) => `patient:${patientId}`;
   transports: ['websocket'],
 })
 export class AppointmentGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+  implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   private readonly server: Server;
 
@@ -80,7 +79,7 @@ export class AppointmentGateway
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   // ─── Connection Lifecycle ──────────────────────────────────────────────────
 
@@ -132,14 +131,7 @@ export class AppointmentGateway
 
   // ─── Room Management ───────────────────────────────────────────────────────
 
-  /**
-   * Client sends:  { room: "doctor:uuid" | "patient:uuid" }
-   *
-   * Security rules:
-   *  - DOCTOR role may only join rooms prefixed with "doctor:"
-   *  - PATIENT role may only join rooms prefixed with "patient:"
-   *  - Any other room format is rejected
-   */
+
   @SubscribeMessage('join_room')
   handleJoinRoom(
     @MessageBody() data: { room: string },
@@ -188,27 +180,42 @@ export class AppointmentGateway
 
   // ─── Broadcast Helper ──────────────────────────────────────────────────────
 
-  /**
-   * Emits a typed appointment event to the doctor room and the patient room.
-   *
-   * Called by CheckInService and AppointmentService after every status change.
-   * Never uses io.emit() — only targeted room broadcasts.
-   */
   emitAppointmentEvent(
     event: SocketEventName,
     payload: AppointmentEventPayload,
   ): void {
+    if (!this.server) return;
+
     const doctorRoom = buildDoctorRoom(payload.doctorId);
     const patientRoom = buildPatientRoom(payload.patientId);
-
-    // ── Audit log ────────────────────────────────────────────────────────────
     this.logger.log(
       `[Emit] ${event} → rooms [${doctorRoom}, ${patientRoom}] ` +
-        `| appointmentId=${payload.appointmentId} status=${payload.status}`,
+      `| appointmentId=${payload.appointmentId} status=${payload.status}`,
     );
 
     // ── Targeted broadcast (never io.emit) ───────────────────────────────────
     this.server.to(doctorRoom).emit(event, payload);
     this.server.to(patientRoom).emit(event, payload);
+  }
+
+  emitQueueUpdated(doctorId: string, payload: any): void {
+    if (!this.server) return;
+    const doctorRoom = buildDoctorRoom(doctorId);
+    this.logger.log(`[Emit] queue.updated → room [${doctorRoom}]`);
+    this.server.to(doctorRoom).emit('queue.updated', payload);
+  }
+
+  emitDoctorStatusBoard(doctorId: string, payload: any): void {
+    if (!this.server) return;
+    const doctorRoom = buildDoctorRoom(doctorId);
+    this.logger.log(`[Emit] doctor.status.board → room [${doctorRoom}]`);
+    this.server.to(doctorRoom).emit('doctor.status.board', payload);
+  }
+
+  emitQueuePositionUpdated(patientId: string, payload: any): void {
+    if (!this.server) return;
+    const patientRoom = buildPatientRoom(patientId);
+    this.logger.log(`[Emit] queue.position.updated → room [${patientRoom}]`);
+    this.server.to(patientRoom).emit('queue.position.updated', payload);
   }
 }

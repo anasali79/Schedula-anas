@@ -51,6 +51,18 @@ export class Appointment {
   @Column({ type: 'timestamp', nullable: true, default: null })
   checkedInAt: Date | null;
 
+  @Column({ type: 'int', nullable: true, default: null })
+  queuePosition: number | null;
+
+  @Column({ type: 'int', nullable: true, default: null })
+  estimatedWaitTime: number | null;
+
+  @Column({ type: 'timestamp', nullable: true, default: null })
+  servedAt: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true, default: null })
+  completedAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

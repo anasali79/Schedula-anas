@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as QRCode from 'qrcode';
 
 import { formatTime, formatDate } from '../common/utils/appointment.utils';
 
@@ -175,19 +174,18 @@ export class EmailService {
       ? `<p style="margin: 5px 0; color: #333333;"><strong>Contact:</strong> ${contactnumber}</p>`
       : '';
 
-    // Generate QR code as a Base64 data URL — payload contains only appointmentId
+    // Generate QR code URL using a public QR code generator API.
+    // Base64 data URLs (e.g. data:image/png;base64) are blocked by most email clients like Gmail.
+    // We use a public API because localhost URLs cannot be loaded by email client proxy servers.
     let qrImageTag = '';
     try {
       const qrPayload = JSON.stringify({ appointmentId });
-      const qrDataUrl = await QRCode.toDataURL(qrPayload, {
-        width: 180,
-        margin: 2,
-        color: { dark: '#1a6b3c', light: '#ffffff' },
-      });
+      const encodedPayload = encodeURIComponent(qrPayload);
+      const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&color=1a6b3c&bgcolor=ffffff&data=${encodedPayload}`;
       qrImageTag = `
         <div style="text-align: center; margin: 20px 0;">
           <p style="margin: 0 0 8px 0; color: #333333; font-weight: bold;">Your Check-In QR Code</p>
-          <img src="${qrDataUrl}" alt="Appointment QR Code"
+          <img src="${qrImageUrl}" alt="Appointment QR Code"
                width="180" height="180"
                style="border: 2px solid #1a6b3c; border-radius: 8px; display: block; margin: 0 auto;" />
           <p style="margin: 8px 0 0 0; font-size: 12px; color: #9e9e9e;">
