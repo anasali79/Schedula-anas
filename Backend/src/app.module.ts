@@ -12,6 +12,7 @@ import { NotificationModule } from './notification/notification.module';
 import { CheckInModule } from './check-in/check-in.module';
 import { getDatabaseConfig } from './config/database.config';
 import { SocketsModule } from './sockets/sockets.module';
+import { ReminderModule } from './reminder/reminder.module';
 
 @Module({
   controllers: [AppController],
@@ -36,6 +37,7 @@ import { SocketsModule } from './sockets/sockets.module';
     NotificationModule,
     CheckInModule,
     SocketsModule,
+    ReminderModule,
   ],
 })
 export class AppModule {}
