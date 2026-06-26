@@ -6,9 +6,11 @@ import {
   NotFoundException,
   forwardRef,
   Inject,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { Repository, Not, DataSource } from 'typeorm';
+import { Cron } from '@nestjs/schedule';
 import { Appointment } from './entities/appointment.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
@@ -17,9 +19,46 @@ import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 import { AvailabilityService } from '../doctor/availability.service';
 import { SlotStatus } from '../doctor/dto/availability.dto';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/enums/notification-type.enum';
+import { EmailService } from '../email/email.service';
+import { formatTime, formatDate, getTodayIST, getTomorrowIST } from '../common/utils/appointment.utils';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const ARRIVAL_BUFFER_MINUTES = 5;
+const RESCHEDULE_CUTOFF_MINUTES = 30;
+const CANCEL_CUTOFF_MINUTES = 30;
+
+// ─── Notification Helpers ─────────────────────────────────────────────────────
+
+
+function buildAppointmentNotification(
+  action: 'booked' | 'cancelled' | 'cancelled by the doctor' | 'rescheduled to',
+  doctorName: string,
+  date: string,
+  startTime: string,
+): { message: string; note: string | null } {
+  const formattedDate = formatDate(date);
+  const formattedTime = formatTime(startTime);
+
+  const message =
+    action === 'rescheduled to'
+      ? `Your appointment with ${doctorName} has been rescheduled to ${formattedDate} at ${formattedTime}.`
+      : `Your appointment with ${doctorName} on ${formattedDate} at ${formattedTime} has been ${action}.`;
+
+  const isCancelled = action === 'cancelled' || action === 'cancelled by the doctor';
+  const note = isCancelled
+    ? null
+    : `Please arrive ${ARRIVAL_BUFFER_MINUTES} minutes before your appointment time.`;
+
+  return { message, note };
+}
 
 @Injectable()
 export class AppointmentService {
+  private readonly logger = new Logger(AppointmentService.name);
+
   constructor(
     @InjectRepository(Appointment)
     private readonly appointmentRepo: Repository<Appointment>,
@@ -32,61 +71,278 @@ export class AppointmentService {
 
     @Inject(forwardRef(() => AvailabilityService))
     private readonly availabilityService: AvailabilityService,
-  ) {}
 
-  // ─── 1. Book Appointment ──────────────────────────────────────────────────────
+    private readonly notificationService: NotificationService,
+    private readonly emailService: EmailService,
+    private readonly dataSource: DataSource,
+  ) {
 
-  async bookAppointment(userId: string, dto: BookAppointmentDto) {
-    // 1. Find the patient profile for this user
-    const patient = await this.patientRepo.findOne({ where: { userId } });
+  }
+  /**
+   * Sends morning reminders for all booked appointments today.
+   * Updates reminderSent flag to prevent duplicate notifications.
+   */
+  @Cron('0 6 * * *', { timeZone: 'Asia/Kolkata' })
+  async sendMorningReminders(): Promise<void> {
+    this.logger.log('[Cron 6AM] Running morning reminder job...');
+
+    try {
+      const todayStr = getTodayIST();
+      this.logger.log(`[Cron 6AM] Fetching booked appointments for today (${todayStr})...`);
+
+      const appointments = await this.appointmentRepo.find({
+        where: {
+          date: todayStr,
+          status: AppointmentStatus.BOOKED,
+          reminderSent: false,
+        },
+        relations: { doctor: true, patient: { user: true } },
+      });
+
+      this.logger.log(`[Cron 6AM] Found ${appointments.length} appointments for today.`);
+
+      for (const appt of appointments) {
+        try {
+          const patientEmail = appt.patient?.user?.email;
+          const patientName = appt.patient?.fullName || 'Patient';
+          const doctorName = appt.doctor?.fullName || 'Doctor';
+
+          // 1. Email reminder
+          if (patientEmail) {
+            await this.emailService.sendAppointmentReminder(
+              patientEmail,
+              patientName,
+              doctorName,
+              appt.date,
+              appt.startTime,
+              appt.tokenNumber,
+            );
+            this.logger.log(`[Cron 6AM] Email sent to ${patientEmail} for appointment ${appt.id}`);
+          }
+
+          // 2. In-app notification
+          const notifMsg = `Friendly reminder — your appointment with Dr. ${doctorName} is today at ${formatTime(appt.startTime)}!`;
+          await this.notificationService.createNotification(
+            appt.patientId,
+            'Appointment Reminder 🗓',
+            notifMsg,
+            NotificationType.APPOINTMENT_REMINDER,
+            appt.tokenNumber ? `Token Number: ${appt.tokenNumber}` : null,
+          );
+          this.logger.log(`[Cron 6AM] In-app notification sent to patient ${appt.patientId}`);
+
+          // Mark reminderSent as true after successful send to prevent duplicates
+          appt.reminderSent = true;
+          await this.appointmentRepo.save(appt);
+
+        } catch (err: any) {
+          this.logger.error(
+            `[Cron 6AM] Failed for appointment ${appt.id}: ${err.message}`,
+            err.stack,
+          );
+          // Continue processing remaining appointments if one fails
+        }
+      }
+
+      this.logger.log('[Cron 6AM] Morning reminder job completed.');
+    } catch (err: any) {
+      this.logger.error(`[Cron 6AM] Job failed: ${err.message}`, err.stack);
+    }
+  }
+
+  /**
+   * Sends evening reminders for tomorrow's booked appointments.
+   */
+  @Cron('0 18 * * *', { timeZone: 'Asia/Kolkata' })
+  async sendEveningReminders(): Promise<void> {
+    this.logger.log('[Cron 6PM] Running evening reminder job for tomorrow...');
+
+    try {
+      const tomorrowStr = getTomorrowIST();
+      this.logger.log(`[Cron 6PM] Fetching booked appointments for tomorrow (${tomorrowStr})...`);
+
+      const appointments = await this.appointmentRepo.find({
+        where: {
+          date: tomorrowStr,
+          status: AppointmentStatus.BOOKED,
+        },
+        relations: { doctor: true, patient: { user: true } },
+      });
+
+      this.logger.log(`[Cron 6PM] Found ${appointments.length} appointments for tomorrow.`);
+
+      for (const appt of appointments) {
+        try {
+          const patientEmail = appt.patient?.user?.email;
+          const patientName = appt.patient?.fullName || 'Patient';
+          const doctorName = appt.doctor?.fullName || 'Doctor';
+
+          // 1. Email reminder
+          if (patientEmail) {
+            await this.emailService.sendAppointmentReminder(
+              patientEmail,
+              patientName,
+              doctorName,
+              appt.date,
+              appt.startTime,
+              appt.tokenNumber,
+            );
+            this.logger.log(`[Cron 6PM] Email sent to ${patientEmail} for appointment ${appt.id}`);
+          }
+
+          // 2. In-app notification
+          const notifMsg = `Reminder — you have an appointment with Dr. ${doctorName} tomorrow at ${formatTime(appt.startTime)}. Please be on time!`;
+          await this.notificationService.createNotification(
+            appt.patientId,
+            'Appointment Tomorrow 🗓',
+            notifMsg,
+            NotificationType.APPOINTMENT_REMINDER,
+            appt.tokenNumber ? `Token Number: ${appt.tokenNumber}` : null,
+          );
+          this.logger.log(`[Cron 6PM] In-app notification sent to patient ${appt.patientId}`);
+
+        } catch (err: any) {
+          this.logger.error(
+            `[Cron 6PM] Failed for appointment ${appt.id}: ${err.message}`,
+            err.stack,
+          );
+        }
+      }
+
+      this.logger.log('[Cron 6PM] Evening reminder job completed.');
+    } catch (err: any) {
+      this.logger.error(`[Cron 6PM] Job failed: ${err.message}`, err.stack);
+    }
+  }
+
+  // ─── Private Helpers ──────────────────────────────────────────────────────────
+
+  private async getPatientByUserId(userId: string): Promise<Patient> {
+    const patient = await this.patientRepo.findOne({
+      where: { userId },
+      relations: { user: true },
+    });
     if (!patient) {
       throw new NotFoundException(
         'Patient profile not found. Please create your profile first.',
       );
     }
+    return patient;
+  }
 
-    // 2. Verify doctor exists
-    const doctor = await this.doctorRepo.findOne({
-      where: { id: dto.doctorId },
-    });
+
+  private async getDoctorByUserId(userId: string): Promise<Doctor> {
+    const doctor = await this.doctorRepo.findOne({ where: { userId } });
     if (!doctor) {
-      throw new NotFoundException(`Doctor with ID ${dto.doctorId} not found`);
+      throw new NotFoundException(
+        'Doctor profile not found. Please create your profile first.',
+      );
     }
+    return doctor;
+  }
 
-    // 3. Validate date is not in the past
+
+  private async sendNotification(
+    patientId: string,
+    title: string,
+    message: string,
+    type: NotificationType,
+    note: string | null = null,
+  ): Promise<void> {
+    try {
+      await this.notificationService.createNotification(patientId, title, message, type, note);
+    } catch (error) {
+      this.logger.error('Notification creation failed:', error);
+    }
+  }
+
+  private async sendBookingEmail(appt: Appointment): Promise<void> {
+    try {
+      const email = appt.patient?.user?.email;
+      if (!email) return;
+      await this.emailService.sendBookingConfirmation(
+        email,
+        appt.patient.fullName,
+        appt.doctor.fullName,
+        appt.doctor.specialization,
+        appt.date,
+        appt.startTime,
+        appt.tokenNumber,
+        '9999999999', // Dummy contact number
+      );
+    } catch (error) {
+      this.logger.error('Failed to send booking confirmation email:', error);
+    }
+  }
+
+  private async sendCancellationEmail(appt: Appointment): Promise<void> {
+    try {
+      const email = appt.patient?.user?.email;
+      if (!email) return;
+      await this.emailService.sendCancellationNotification(
+        email,
+        appt.patient.fullName,
+        appt.doctor.fullName,
+        appt.date,
+        appt.startTime,
+      );
+    } catch (error) {
+      this.logger.error('Failed to send cancellation email:', error);
+    }
+  }
+
+  private async sendRescheduleEmail(
+    appt: Appointment,
+    previousDate?: string,
+    previousStartTime?: string,
+  ): Promise<void> {
+    try {
+      const email = appt.patient?.user?.email;
+      if (!email) return;
+      await this.emailService.sendRescheduleNotification(
+        email,
+        appt.patient.fullName,
+        appt.doctor.fullName,
+        appt.doctor.specialization,
+        appt.date,
+        appt.startTime,
+        appt.tokenNumber,
+        previousDate,
+        previousStartTime,
+      );
+    } catch (error) {
+      this.logger.error('Failed to send reschedule email:', error);
+    }
+  }
+
+  // ─── 1. Book Appointment ──────────────────────────────────────────────────────
+
+  async bookAppointment(userId: string, dto: BookAppointmentDto) {
+    const patient = await this.getPatientByUserId(userId);
+
+    const doctor = await this.doctorRepo.findOne({ where: { id: dto.doctorId } });
+    if (!doctor) throw new NotFoundException(`Doctor with ID ${dto.doctorId} not found`);
+
     this.validateFutureDateTime(dto.date, dto.startTime);
 
-    // 4. Validate the slot exists in doctor's availability
-    const slotInfo = await this.validateSlotExists(
-      dto.doctorId,
-      dto.date,
-      dto.startTime,
-      dto.endTime,
-    );
+    const slotInfo = await this.validateSlotExists(dto.doctorId, dto.date, dto.startTime, dto.endTime);
 
-    // 4.5 Prevent patient from booking the same slot twice
-    const patientHasBooking = await this.appointmentRepo.findOne({
+    const patientHasBookingOnDay = await this.appointmentRepo.findOne({
       where: {
         patientId: patient.id,
         doctorId: dto.doctorId,
         date: dto.date,
-        startTime: dto.startTime,
-        endTime: dto.endTime,
         status: AppointmentStatus.BOOKED,
       },
     });
-
-    if (patientHasBooking) {
-      throw new ConflictException('You have already booked this slot');
+    if (patientHasBookingOnDay) {
+      throw new ConflictException('You already have an appointment with this doctor on this day');
     }
 
-    // 5. Check if the slot is already booked (duplicate booking prevention)
     if (slotInfo.schedulingType === 'WAVE') {
       const bookedCount = slotInfo.bookedCount ?? 0;
       const maxPatients = slotInfo.maxPatients ?? 0;
-      if (bookedCount >= maxPatients) {
-        throw new ConflictException('This slot is already booked');
-      }
+      if (bookedCount >= maxPatients) throw new ConflictException('This slot is already booked');
     } else {
       const existingBooking = await this.appointmentRepo.findOne({
         where: {
@@ -97,13 +353,8 @@ export class AppointmentService {
           status: AppointmentStatus.BOOKED,
         },
       });
-
-      if (existingBooking) {
-        throw new ConflictException('This slot is already booked');
-      }
+      if (existingBooking) throw new ConflictException('This slot is already booked');
     }
-
-    // 5.5 Calculate token number
     let tokenNumber: number | null = null;
     if (slotInfo.schedulingType === 'WAVE') {
       const rawResult = (await this.appointmentRepo
@@ -111,20 +362,13 @@ export class AppointmentService {
         .select('MAX(appointment.tokenNumber)', 'max')
         .where('appointment.doctorId = :doctorId', { doctorId: dto.doctorId })
         .andWhere('appointment.date = :date', { date: dto.date })
-        .andWhere('appointment.startTime = :startTime', {
-          startTime: dto.startTime,
-        })
+        .andWhere('appointment.startTime = :startTime', { startTime: dto.startTime })
         .andWhere('appointment.endTime = :endTime', { endTime: dto.endTime })
         .getRawOne()) as unknown;
       const maxTokenResult = rawResult as { max: string | null } | undefined;
-
-      const currentMax = maxTokenResult?.max
-        ? parseInt(maxTokenResult.max, 10)
-        : 0;
+      const currentMax = maxTokenResult?.max ? parseInt(maxTokenResult.max, 10) : 0;
       tokenNumber = currentMax + 1;
     }
-
-    // 6. Create the appointment
     const appointment = this.appointmentRepo.create({
       doctorId: dto.doctorId,
       patientId: patient.id,
@@ -137,27 +381,37 @@ export class AppointmentService {
 
     const saved = await this.appointmentRepo.save(appointment);
 
-    // Re-fetch with relations for response
+    const bookedNotif = buildAppointmentNotification('booked', doctor.fullName, dto.date, dto.startTime);
+    await this.sendNotification(
+      patient.id,
+      'Appointment Booked',
+      bookedNotif.message,
+      NotificationType.APPOINTMENT_BOOKED,
+      bookedNotif.note,
+    );
     const fullAppointment = await this.appointmentRepo.findOne({
       where: { id: saved.id },
-      relations: { doctor: true, patient: true },
+      relations: { doctor: true, patient: { user: true } },
     });
+
+    if (!fullAppointment) {
+      throw new NotFoundException('Appointment not found after save');
+    }
+
+    this.sendBookingEmail(fullAppointment).catch((err) =>
+      this.logger.error('Failed to send booking confirmation email:', err),
+    );
 
     return {
       message: 'Appointment booked successfully',
-      data: this.toPatientAppointmentResponse(fullAppointment!),
+      data: this.toPatientAppointmentResponse(fullAppointment),
     };
   }
 
   // ─── 2. Patient Appointment View ──────────────────────────────────────────────
 
   async getPatientAppointments(userId: string) {
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
+    const patient = await this.getPatientByUserId(userId);
 
     const appointments = await this.appointmentRepo.find({
       where: { patientId: patient.id },
@@ -165,15 +419,8 @@ export class AppointmentService {
       order: { date: 'DESC', startTime: 'DESC' },
     });
 
-    if (appointments.length === 0) {
-      return {
-        message: 'No appointments found',
-        data: [],
-      };
-    }
-
     return {
-      message: 'Appointments retrieved successfully',
+      message: appointments.length === 0 ? 'No appointments found' : 'Appointments retrieved successfully',
       data: appointments.map((appt) => this.toPatientAppointmentResponse(appt)),
     };
   }
@@ -181,125 +428,84 @@ export class AppointmentService {
   // ─── 3. Cancel Appointment ────────────────────────────────────────────────────
 
   async cancelAppointment(userId: string, appointmentId: string) {
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
-
-    // Find appointment
+    const patient = await this.getPatientByUserId(userId);
     const appointment = await this.appointmentRepo.findOne({
       where: { id: appointmentId },
-      relations: { doctor: true, patient: true },
+      relations: { doctor: true, patient: { user: true } },
     });
+    if (!appointment) throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
 
-    if (!appointment) {
-      throw new NotFoundException(
-        `Appointment with ID ${appointmentId} not found`,
-      );
-    }
-
-    // Only appointment owner can cancel
     if (appointment.patientId !== patient.id) {
-      throw new ForbiddenException(
-        'Access denied: You can only cancel your own appointments',
-      );
+      throw new ForbiddenException('Access denied: You can only cancel your own appointments');
     }
-
-    // Cannot cancel already cancelled appointment
     if (appointment.status === AppointmentStatus.CANCELLED) {
       throw new BadRequestException('This appointment is already cancelled');
     }
+    // Do not allow cancelling rescheduled appointments
+    if (appointment.status === AppointmentStatus.RESCHEDULED) {
+      throw new BadRequestException('Cannot cancel an already rescheduled appointment');
+    }
 
-    // Cannot cancel past appointments
     this.validateCancelCutoff(appointment.date, appointment.startTime);
 
-    // Cancel the appointment
     appointment.status = AppointmentStatus.CANCELLED;
-    const saved = await this.appointmentRepo.save(appointment);
+    await this.appointmentRepo.save(appointment);
+
+    const cancelledNotif = buildAppointmentNotification('cancelled', appointment.doctor.fullName, appointment.date, appointment.startTime);
+    await this.sendNotification(
+      patient.id,
+      'Appointment Cancelled',
+      cancelledNotif.message,
+      NotificationType.APPOINTMENT_CANCELLED,
+      cancelledNotif.note,
+    );
+
+    this.sendCancellationEmail(appointment).catch((err) =>
+      this.logger.error('Failed to send cancellation email:', err),
+    );
 
     return {
       message: 'Appointment cancelled successfully',
-      data: this.toPatientAppointmentResponse(saved),
+      data: this.toPatientAppointmentResponse(appointment),
     };
   }
 
   // ─── 3.5. Reschedule Appointment ──────────────────────────────────────────────
 
-  async rescheduleAppointment(
-    userId: string,
-    appointmentId: string,
-    dto: RescheduleAppointmentDto,
-  ) {
-    // 1. Find the patient profile
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
+  async rescheduleAppointment(userId: string, appointmentId: string, dto: RescheduleAppointmentDto) {
+    const patient = await this.getPatientByUserId(userId);
 
-    // 2. Find the existing appointment
     const appointment = await this.appointmentRepo.findOne({
       where: { id: appointmentId },
       relations: { doctor: true, patient: true },
     });
+    if (!appointment) throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
 
-    if (!appointment) {
-      throw new NotFoundException(
-        `Appointment with ID ${appointmentId} not found`,
-      );
-    }
-
-    // 3. Only appointment owner can reschedule
     if (appointment.patientId !== patient.id) {
-      throw new ForbiddenException(
-        'Access denied: You can only reschedule your own appointments',
-      );
+      throw new ForbiddenException('Access denied: You can only reschedule your own appointments');
     }
-
-    // 4. Cannot reschedule cancelled or already rescheduled appointments
     if (appointment.status === AppointmentStatus.CANCELLED) {
-      throw new BadRequestException(
-        'Cannot reschedule a cancelled appointment',
-      );
+      throw new BadRequestException('Cannot reschedule a cancelled appointment');
     }
-
     if (appointment.status === AppointmentStatus.RESCHEDULED) {
-      throw new BadRequestException(
-        'This appointment has already been rescheduled',
-      );
+      throw new BadRequestException('This appointment has already been rescheduled');
     }
 
-    // 5. 30-minute cutoff rule: Cannot reschedule if less than 30 minutes before appointment
     this.validateRescheduleCutoff(appointment.date, appointment.startTime);
 
-    // 6. Cannot reschedule to the same slot/time
     if (
       appointment.date === dto.date &&
       appointment.startTime === dto.startTime &&
       appointment.endTime === dto.endTime
     ) {
-      throw new BadRequestException(
-        'Cannot reschedule to the same date and time slot',
-      );
+      throw new BadRequestException('Cannot reschedule to the same date and time slot');
     }
 
-    // 7. Validate new date/time is in the future
     this.validateFutureDateTime(dto.date, dto.startTime);
 
-    // 8. Verify doctor still exists
-    const doctor = await this.doctorRepo.findOne({
-      where: { id: appointment.doctorId },
-    });
-    if (!doctor) {
-      throw new NotFoundException(
-        `Doctor with ID ${appointment.doctorId} not found`,
-      );
-    }
+    const doctor = await this.doctorRepo.findOne({ where: { id: appointment.doctorId } });
+    if (!doctor) throw new NotFoundException(`Doctor with ID ${appointment.doctorId} not found`);
 
-    // 9. Validate the new slot exists and is available
     let slotInfo: {
       startTime: string;
       endTime: string;
@@ -309,93 +515,35 @@ export class AppointmentService {
       bookedCount?: number;
       availableCount?: number;
     };
+
     try {
-      slotInfo = await this.validateSlotExists(
-        appointment.doctorId,
-        dto.date,
-        dto.startTime,
-        dto.endTime,
-      );
+      slotInfo = await this.validateSlotExists(appointment.doctorId, dto.date, dto.startTime, dto.endTime);
     } catch (error: any) {
-      // If slot is unavailable, suggest the next available slot
-      if (
-        error instanceof BadRequestException ||
-        error instanceof ConflictException
-      ) {
-        const suggestion = await this.availabilityService.findNextAvailableSlot(
-          appointment.doctorId,
-          dto.date,
-        );
-
-        const response: {
-          message: string;
-          error?: string;
-          suggestedSlot?: {
-            date: string;
-            startTime: string;
-            endTime: string;
-            schedulingType: string;
-            maxPatients?: number;
-            bookedCount?: number;
-            availableCount?: number;
-          } | null;
-        } = {
-          message: 'Requested slot is unavailable',
+      if (error instanceof BadRequestException || error instanceof ConflictException) {
+        const suggestion = await this.availabilityService.findNextAvailableSlot(appointment.doctorId, dto.date);
+        const response: any = {
+          message: suggestion
+            ? 'Requested slot is unavailable. Here is the next available slot.'
+            : 'Requested slot is unavailable. No alternative slots found in the next 30 days.',
           error: (error as Error).message,
+          ...(suggestion && { suggestedSlot: suggestion }),
         };
-
-        if (suggestion) {
-          response.suggestedSlot = suggestion;
-          response.message =
-            'Requested slot is unavailable. Here is the next available slot.';
-        } else {
-          response.message =
-            'Requested slot is unavailable. No alternative slots found in the next 30 days.';
-        }
-
         throw new ConflictException(response);
       }
       throw error;
     }
 
-    // 10. Check if the new slot is already booked
     if (slotInfo.schedulingType === 'WAVE') {
-      const bookedCount = slotInfo.bookedCount ?? 0;
-      const maxPatients = slotInfo.maxPatients ?? 0;
-      if (bookedCount >= maxPatients) {
-        // Wave is full, suggest next available
+      if ((slotInfo.bookedCount ?? 0) >= (slotInfo.maxPatients ?? 0)) {
         const suggestion = await this.availabilityService.findNextAvailableSlot(
-          appointment.doctorId,
-          dto.date,
-          dto.startTime,
-          dto.endTime,
+          appointment.doctorId, dto.date, dto.startTime, dto.endTime,
         );
-
-        const response: {
-          message: string;
-          suggestedSlot?: {
-            date: string;
-            startTime: string;
-            endTime: string;
-            schedulingType: string;
-            maxPatients?: number;
-            bookedCount?: number;
-            availableCount?: number;
-          } | null;
-        } = {
-          message: 'Requested wave is full',
-        };
-
-        if (suggestion) {
-          response.suggestedSlot = suggestion;
-          response.message =
-            'Requested wave is full. Here is the next available slot.';
-        }
-
-        throw new ConflictException(response);
+        throw new ConflictException({
+          message: suggestion ? 'Requested wave is full. Here is the next available slot.' : 'Requested wave is full',
+          ...(suggestion && { suggestedSlot: suggestion }),
+        });
       }
     } else {
-      // Stream: check if someone else already has this slot
       const existingBooking = await this.appointmentRepo.findOne({
         where: {
           doctorId: appointment.doctorId,
@@ -405,93 +553,56 @@ export class AppointmentService {
           status: AppointmentStatus.BOOKED,
         },
       });
-
       if (existingBooking) {
-        // Slot already booked, suggest next available
         const suggestion = await this.availabilityService.findNextAvailableSlot(
-          appointment.doctorId,
-          dto.date,
-          dto.startTime,
-          dto.endTime,
+          appointment.doctorId, dto.date, dto.startTime, dto.endTime,
         );
-
-        const response: {
-          message: string;
-          suggestedSlot?: {
-            date: string;
-            startTime: string;
-            endTime: string;
-            schedulingType: string;
-            maxPatients?: number;
-            bookedCount?: number;
-            availableCount?: number;
-          } | null;
-        } = {
-          message: 'Requested slot is already booked',
-        };
-
-        if (suggestion) {
-          response.suggestedSlot = suggestion;
-          response.message =
-            'Requested slot is already booked. Here is the next available slot.';
-        }
-
-        throw new ConflictException(response);
+        throw new ConflictException({
+          message: suggestion ? 'Requested slot is already booked. Here is the next available slot.' : 'Requested slot is already booked',
+          ...(suggestion && { suggestedSlot: suggestion }),
+        });
       }
     }
 
-    // 11. Prevent patient from having a duplicate booking on the new slot
-    const patientHasBooking = await this.appointmentRepo.findOne({
+    const patientHasBookingOnDay = await this.appointmentRepo.findOne({
       where: {
         patientId: patient.id,
         doctorId: appointment.doctorId,
         date: dto.date,
-        startTime: dto.startTime,
-        endTime: dto.endTime,
         status: AppointmentStatus.BOOKED,
+        id: Not(appointmentId),
       },
     });
-
-    if (patientHasBooking) {
-      throw new ConflictException('You already have a booking for this slot');
+    if (patientHasBookingOnDay) {
+      throw new ConflictException('You already have an appointment with this doctor on this day');
     }
 
-    // 12. Calculate token number for the new slot
     let tokenNumber: number | null = null;
     if (slotInfo.schedulingType === 'WAVE') {
       const rawResult = (await this.appointmentRepo
         .createQueryBuilder('appointment')
         .select('MAX(appointment.tokenNumber)', 'max')
-        .where('appointment.doctorId = :doctorId', {
-          doctorId: appointment.doctorId,
-        })
+        .where('appointment.doctorId = :doctorId', { doctorId: appointment.doctorId })
         .andWhere('appointment.date = :date', { date: dto.date })
-        .andWhere('appointment.startTime = :startTime', {
-          startTime: dto.startTime,
-        })
+        .andWhere('appointment.startTime = :startTime', { startTime: dto.startTime })
         .andWhere('appointment.endTime = :endTime', { endTime: dto.endTime })
         .getRawOne()) as unknown;
       const maxTokenResult = rawResult as { max: string | null } | undefined;
-
-      const currentMax = maxTokenResult?.max
-        ? parseInt(maxTokenResult.max, 10)
-        : 0;
+      const currentMax = maxTokenResult?.max ? parseInt(maxTokenResult.max, 10) : 0;
       tokenNumber = currentMax + 1;
     }
 
-    // 13. Atomically: mark old appointment as RESCHEDULED + create new appointment
-    //     Uses a transaction to avoid inconsistent state
-    const queryRunner =
-      this.appointmentRepo.manager.connection.createQueryRunner();
+    const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
+    const previousDate = appointment.date;
+    const previousStartTime = appointment.startTime;
+
     try {
-      // Release old slot
       appointment.status = AppointmentStatus.RESCHEDULED;
       await queryRunner.manager.save(appointment);
 
-      // Reserve new slot
       const newAppointment = this.appointmentRepo.create({
         doctorId: appointment.doctorId,
         patientId: patient.id,
@@ -503,14 +614,27 @@ export class AppointmentService {
       });
 
       const saved = await queryRunner.manager.save(newAppointment);
-
       await queryRunner.commitTransaction();
 
-      // Re-fetch with relations for response
+      const rescheduledNotif = buildAppointmentNotification('rescheduled to', appointment.doctor.fullName, dto.date, dto.startTime);
+      await this.sendNotification(
+        patient.id,
+        'Appointment Rescheduled',
+        rescheduledNotif.message,
+        NotificationType.APPOINTMENT_RESCHEDULED,
+        rescheduledNotif.note,
+      );
+
       const fullAppointment = await this.appointmentRepo.findOne({
         where: { id: saved.id },
-        relations: { doctor: true, patient: true },
+        relations: { doctor: true, patient: { user: true } },
       });
+
+      if (fullAppointment) {
+        this.sendRescheduleEmail(fullAppointment, previousDate, previousStartTime).catch((err) =>
+          console.error('Failed to send reschedule email:', err),
+        );
+      }
 
       return {
         message: 'Appointment rescheduled successfully',
@@ -536,12 +660,7 @@ export class AppointmentService {
   // ─── 4. Doctor Appointment View ───────────────────────────────────────────────
 
   async getDoctorAppointments(userId: string, date?: string) {
-    const doctor = await this.doctorRepo.findOne({ where: { userId } });
-    if (!doctor) {
-      throw new NotFoundException(
-        'Doctor profile not found. Please create your profile first.',
-      );
-    }
+    const doctor = await this.getDoctorByUserId(userId);
 
     const whereClause: any = {
       doctorId: doctor.id,
@@ -561,15 +680,8 @@ export class AppointmentService {
       order: { date: 'DESC', startTime: 'DESC' },
     });
 
-    if (appointments.length === 0) {
-      return {
-        message: 'No appointments found',
-        data: [],
-      };
-    }
-
     return {
-      message: 'Appointments retrieved successfully',
+      message: appointments.length === 0 ? 'No appointments found' : 'Appointments retrieved successfully',
       data: appointments.map((appt) => this.toDoctorAppointmentResponse(appt)),
     };
   }
@@ -577,40 +689,36 @@ export class AppointmentService {
   // ─── 4.5. Doctor Cancel Appointment ───────────────────────────────────────────
 
   async cancelAppointmentByDoctor(userId: string, appointmentId: string) {
-    const doctor = await this.doctorRepo.findOne({ where: { userId } });
-    if (!doctor) {
-      throw new NotFoundException(
-        'Doctor profile not found. Please create your profile first.',
-      );
-    }
+    const doctor = await this.getDoctorByUserId(userId);
 
-    // Find appointment
     const appointment = await this.appointmentRepo.findOne({
       where: { id: appointmentId },
-      relations: { doctor: true, patient: true },
+      relations: { doctor: true, patient: { user: true } },
     });
+    if (!appointment) throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
 
-    if (!appointment) {
-      throw new NotFoundException(
-        `Appointment with ID ${appointmentId} not found`,
-      );
-    }
-
-    // Only assigned doctor can access their appointments
     if (appointment.doctorId !== doctor.id) {
-      throw new ForbiddenException(
-        'Access denied: You can only access your own appointments',
-      );
+      throw new ForbiddenException('Access denied: You can only access your own appointments');
     }
-
-    // Cannot cancel already cancelled appointment
     if (appointment.status === AppointmentStatus.CANCELLED) {
       throw new BadRequestException('This appointment is already cancelled');
     }
 
-    // Cancel the appointment
     appointment.status = AppointmentStatus.CANCELLED;
     const saved = await this.appointmentRepo.save(appointment);
+
+    const doctorCancelNotif = buildAppointmentNotification('cancelled by the doctor', appointment.doctor.fullName, appointment.date, appointment.startTime);
+    await this.sendNotification(
+      appointment.patientId,
+      'Appointment Cancelled by Doctor',
+      doctorCancelNotif.message,
+      NotificationType.APPOINTMENT_CANCELLED,
+      doctorCancelNotif.note,
+    );
+
+    this.sendCancellationEmail(appointment).catch((err) =>
+      console.error('Failed to send cancellation email:', err),
+    );
 
     return {
       message: 'Appointment cancelled successfully',
@@ -621,23 +729,15 @@ export class AppointmentService {
   // ─── 5. Patient Dashboard Stats ───────────────────────────────────────────────
 
   async getPatientDashboardStats(userId: string) {
-    const patient = await this.patientRepo.findOne({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
-    }
+    const patient = await this.getPatientByUserId(userId);
 
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+    const todayStr = getTodayIST();
 
     const upcomingAppointments = await this.appointmentRepo
       .createQueryBuilder('appointment')
       .where('appointment.patientId = :patientId', { patientId: patient.id })
       .andWhere('appointment.date >= :today', { today: todayStr })
-      .andWhere('appointment.status = :status', {
-        status: AppointmentStatus.BOOKED,
-      })
+      .andWhere('appointment.status = :status', { status: AppointmentStatus.BOOKED })
       .getCount();
 
     const pastAppointments = await this.appointmentRepo
@@ -647,48 +747,29 @@ export class AppointmentService {
       .getCount();
 
     return {
-      upcomingAppointments,
-      pastAppointments,
-      prescriptions: 0,
+      message: 'Dashboard statistics retrieved successfully',
+      data: { upcomingAppointments, pastAppointments },
     };
   }
 
-  // ─── Private Helpers ──────────────────────────────────────────────────────────
+  // ─── Private Validators ───────────────────────────────────────────────────────
 
-  /**
-   * Validate that the appointment date/time is in the future.
-   */
   private validateFutureDateTime(date: string, startTime: string): void {
-    const now = new Date();
+    const todayStr = getTodayIST();
 
-    // Build "today" string in YYYY-MM-DD from local time
-    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
-      .toString()
-      .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+    if (date < todayStr) throw new BadRequestException('Cannot book appointment for a past date');
 
-    if (date < todayStr) {
-      throw new BadRequestException('Cannot book appointment for a past date');
-    }
-
-    // If booking for today, check if the startTime hasn't already passed
     if (date === todayStr) {
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      // Use IST time for comparison
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
       const [h, m] = startTime.split(':').map(Number);
-      const slotMinutes = h * 60 + m;
-
-      if (slotMinutes <= currentMinutes) {
-        throw new BadRequestException(
-          'Cannot book appointment for a past time slot',
-        );
+      if (h * 60 + m <= currentMinutes) {
+        throw new BadRequestException('Cannot book appointment for a past time slot');
       }
     }
   }
 
-  /**
-   * Validate that the given slot exists in the doctor's available slots.
-   * This reuses the AvailabilityService to get all available (non-booked) slots
-   * and checks if the requested slot is among them.
-   */
   private async validateSlotExists(
     doctorId: string,
     date: string,
@@ -704,108 +785,60 @@ export class AppointmentService {
     availableCount?: number;
   }> {
     try {
-      // Get available slots (this already filters out booked ones)
-      const availableSlots = await this.availabilityService.getAvailableSlots(
-        doctorId,
-        date,
-      );
-
-      const validStatuses: string[] = [
-        SlotStatus.AVAILABLE,
-        SlotStatus.CANCEL_AND_AVAILABLE,
-      ];
-
+      const availableSlots = await this.availabilityService.getAvailableSlots(doctorId, date);
+      const validStatuses: string[] = [SlotStatus.AVAILABLE, SlotStatus.CANCEL_AND_AVAILABLE];
       const foundSlot = availableSlots.find(
-        (slot) =>
-          slot.startTime === startTime &&
-          slot.endTime === endTime &&
-          validStatuses.includes(slot.status),
+        (slot) => slot.startTime === startTime && slot.endTime === endTime && validStatuses.includes(slot.status),
       );
-
-      if (!foundSlot) {
-        throw new BadRequestException('Slot is not available for this doctor');
-      }
+      if (!foundSlot) throw new BadRequestException('Slot is not available for this doctor');
       return foundSlot;
     } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      // NotFoundException from getAvailableSlots means no availability
+      if (error instanceof BadRequestException) throw error;
       if (error instanceof NotFoundException) {
-        throw new BadRequestException(
-          `No available slots found for this doctor on ${date}`,
-        );
+        throw new BadRequestException(`No available slots found for this doctor on ${date}`);
       }
       throw error;
     }
   }
 
-  /**
-   * Validate that the appointment has not already passed (for cancellation).
-   */
   private validateCancelCutoff(date: string, startTime: string): void {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
-      .toString()
-      .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+    const todayStr = getTodayIST();
 
-    if (date < todayStr) {
-      throw new BadRequestException('Cannot cancel a past appointment');
-    }
+    if (date < todayStr) throw new BadRequestException('Cannot cancel a past appointment');
 
     if (date === todayStr) {
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
       const [h, m] = startTime.split(':').map(Number);
       const slotMinutes = h * 60 + m;
-      const minutesUntilAppointment = slotMinutes - currentMinutes;
-
-      if (slotMinutes <= currentMinutes) {
-        throw new BadRequestException('Cannot cancel a past appointment');
-      }
-
-      if (minutesUntilAppointment < 30) {
+      if (slotMinutes <= currentMinutes) throw new BadRequestException('Cannot cancel a past appointment');
+      if (slotMinutes - currentMinutes < CANCEL_CUTOFF_MINUTES) {
         throw new BadRequestException(
-          'Cannot cancel appointment: less than 30 minutes before the appointment start time',
+          `Cannot cancel appointment: less than ${CANCEL_CUTOFF_MINUTES} minutes before the appointment start time`,
         );
       }
     }
   }
 
-  /**
-   * Validate the 30-minute cutoff rule for rescheduling.
-   * Patients cannot reschedule if less than 30 minutes remain before the appointment.
-   */
   private validateRescheduleCutoff(date: string, startTime: string): void {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1)
-      .toString()
-      .padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+    const todayStr = getTodayIST();
 
-    if (date < todayStr) {
-      throw new BadRequestException('Cannot reschedule a past appointment');
-    }
+    if (date < todayStr) throw new BadRequestException('Cannot reschedule a past appointment');
 
     if (date === todayStr) {
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
       const [h, m] = startTime.split(':').map(Number);
       const slotMinutes = h * 60 + m;
-      const minutesUntilAppointment = slotMinutes - currentMinutes;
-
-      if (slotMinutes <= currentMinutes) {
-        throw new BadRequestException('Cannot reschedule a past appointment');
-      }
-
-      if (minutesUntilAppointment < 30) {
+      if (slotMinutes <= currentMinutes) throw new BadRequestException('Cannot reschedule a past appointment');
+      if (slotMinutes - currentMinutes < RESCHEDULE_CUTOFF_MINUTES) {
         throw new BadRequestException(
-          'Cannot reschedule appointment: less than 30 minutes before the appointment start time',
+          `Cannot reschedule appointment: less than ${RESCHEDULE_CUTOFF_MINUTES} minutes before the appointment start time`,
         );
       }
     }
   }
 
-  /**
-   * Format appointment for patient view (includes doctor details).
-   */
   private toPatientAppointmentResponse(appointment: Appointment) {
     return {
       id: appointment.id,
@@ -816,20 +849,17 @@ export class AppointmentService {
       ...(appointment.tokenNumber !== null && { tokenNumber: appointment.tokenNumber }),
       doctor: appointment.doctor
         ? {
-            id: appointment.doctor.id,
-            fullName: appointment.doctor.fullName,
-            specialization: appointment.doctor.specialization,
-            consultationFee: Number(appointment.doctor.consultationFee),
-          }
+          id: appointment.doctor.id,
+          fullName: appointment.doctor.fullName,
+          specialization: appointment.doctor.specialization,
+          consultationFee: Number(appointment.doctor.consultationFee),
+        }
         : null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
     };
   }
 
-  /**
-   * Format appointment for doctor view (includes patient details).
-   */
   private toDoctorAppointmentResponse(appointment: Appointment) {
     return {
       id: appointment.id,
@@ -841,15 +871,15 @@ export class AppointmentService {
       ...(appointment.tokenNumber !== null && { tokenNumber: appointment.tokenNumber }),
       patient: appointment.patient
         ? {
-            id: appointment.patient.id,
-            fullName: appointment.patient.fullName,
-            age: appointment.patient.age,
-            gender: appointment.patient.gender,
-            phone: appointment.patient.phone,
-          }
+          id: appointment.patient.id,
+          fullName: appointment.patient.fullName,
+          age: appointment.patient.age,
+          gender: appointment.patient.gender,
+          phone: appointment.patient.phone,
+        }
         : null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
     };
   }
-}
+} 

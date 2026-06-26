@@ -20,7 +20,7 @@ import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 
 @Controller()
 export class AppointmentController {
-  constructor(private readonly appointmentService: AppointmentService) {}
+  constructor(private readonly appointmentService: AppointmentService) { }
 
   // ─── 1. Book Appointment (Patient only) ───────────────────────────────────────
   // POST /api/appointment
@@ -82,5 +82,17 @@ export class AppointmentController {
     @Body() dto: RescheduleAppointmentDto,
   ) {
     return this.appointmentService.rescheduleAppointment(user.id, id, dto);
+  }
+
+  // ─── 5. Test/Trigger Daily Reminders (Development/Admin/Testing) ────────────────
+  // POST /api/appointment/test-reminders
+  @Post('appointment/test-reminders')
+  async triggerDailyReminders() {
+    await this.appointmentService.sendMorningReminders();
+    await this.appointmentService.sendEveningReminders();
+    return {
+      success: true,
+      message: 'Reminder triggered successfully',
+    };
   }
 }

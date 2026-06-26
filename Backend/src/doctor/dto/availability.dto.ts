@@ -20,7 +20,7 @@ import { DayOfWeek } from '../entities/recurring-availability.entity';
 import { SchedulingType } from '../../common/enums/scheduling-type.enum';
 import { PartialType } from '@nestjs/mapped-types';
 
-// ─── SlotStatus — alag file mein hona chahiye (common/enums/slot-status.enum.ts) ───
+// ─── SlotStatus ───
 export enum SlotStatus {
   AVAILABLE = 'available',
   BOOKED = 'booked',
@@ -31,16 +31,15 @@ export enum SlotStatus {
 const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE_REGEX = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
-// ─── Cross-field Validators ───────────────────────────────────────────────────
 
 /**
- * endTime > startTime check — jahan bhi dono fields hoon
+ * Validates that endTime is after startTime
  */
 @ValidatorConstraint({ name: 'isEndAfterStart', async: false })
 export class IsEndAfterStartConstraint implements ValidatorConstraintInterface {
   validate(_: string, args: ValidationArguments): boolean {
     const obj = args.object as any;
-    if (!obj.startTime || !obj.endTime) return true; // @IsNotEmpty handle karega
+    if (!obj.startTime || !obj.endTime) return true;
     return obj.endTime > obj.startTime;
   }
   defaultMessage(): string {
@@ -49,7 +48,7 @@ export class IsEndAfterStartConstraint implements ValidatorConstraintInterface {
 }
 
 /**
- * Exactly ek hona chahiye: dayOfWeek ya daysOfWeek (dono nahi, koi ek nahi bhi nahi)
+ * Validates that either dayOfWeek or daysOfWeek is provided, but not both
  */
 @ValidatorConstraint({ name: 'dayOfWeekXOR', async: false })
 export class DayOfWeekXORConstraint implements ValidatorConstraintInterface {
@@ -57,16 +56,12 @@ export class DayOfWeekXORConstraint implements ValidatorConstraintInterface {
     const obj = args.object as CreateRecurringAvailabilityDto;
     const hasSingle = !!obj.dayOfWeek;
     const hasMultiple = Array.isArray(obj.daysOfWeek) && obj.daysOfWeek.length > 0;
-    return hasSingle !== hasMultiple; // XOR — exactly ek hona chahiye
+    return hasSingle !== hasMultiple;
   }
   defaultMessage(): string {
     return 'Provide either dayOfWeek or daysOfWeek — not both, not neither';
   }
 }
-
-/**
- * Reusable decorator: startTime aur endTime saath aane chahiye (partial nahi)
- */
 function BothOrNeitherTime(validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
     registerDecorator({
@@ -79,11 +74,10 @@ function BothOrNeitherTime(validationOptions?: ValidationOptions) {
           const obj = args.object as any;
           const hasStart = !!obj.startTime;
           const hasEnd = !!obj.endTime;
-          // dono hone chahiye ya dono nahi
           return hasStart === hasEnd;
         },
         defaultMessage(): string {
-          return 'startTime aur endTime dono saath provide karo ya dono chhod do';
+          return 'Both startTime and endTime must be provided together, or both must be omitted';
         },
       },
     });
@@ -97,7 +91,7 @@ export class CreateRecurringAvailabilityDto {
   @IsEnum(DayOfWeek, {
     message: `dayOfWeek must be one of: ${Object.values(DayOfWeek).join(', ')}`,
   })
-  @Validate(DayOfWeekXORConstraint) // ← dono ya koi nahi — block karo
+  @Validate(DayOfWeekXORConstraint)
   dayOfWeek?: DayOfWeek;
 
   @IsOptional()
@@ -120,7 +114,7 @@ export class CreateRecurringAvailabilityDto {
   @Matches(TIME_REGEX, {
     message: 'endTime must be in HH:MM format (24-hour), e.g. "17:00"',
   })
-  @Validate(IsEndAfterStartConstraint) // ← endTime > startTime
+  @Validate(IsEndAfterStartConstraint)
   endTime: string;
   @IsOptional()
   @IsEnum(SchedulingType, {
@@ -173,7 +167,7 @@ export class CreateCustomAvailabilityDto {
   @Matches(TIME_REGEX, {
     message: 'endTime must be in HH:MM format (24-hour), e.g. "15:00"',
   })
-  @Validate(IsEndAfterStartConstraint) // ← endTime > startTime
+  @Validate(IsEndAfterStartConstraint)
   endTime: string;
 
   @IsOptional()
@@ -232,7 +226,7 @@ export class CancelOccurrenceDto {
   @Matches(TIME_REGEX, {
     message: 'endTime must be in HH:MM format (24-hour), e.g. "12:00"',
   })
-  @Validate(IsEndAfterStartConstraint) // ← endTime > startTime
+  @Validate(IsEndAfterStartConstraint)
   endTime: string;
 }
 
@@ -264,7 +258,7 @@ export class SetUnavailableDto {
   @Matches(TIME_REGEX, {
     message: 'startTime must be in HH:MM format (24-hour), e.g. "09:00"',
   })
-  @BothOrNeitherTime() // ← startTime akela nahi aa sakta
+  @BothOrNeitherTime()
   startTime?: string;
 
   @IsOptional()
@@ -272,7 +266,7 @@ export class SetUnavailableDto {
   @Matches(TIME_REGEX, {
     message: 'endTime must be in HH:MM format (24-hour), e.g. "12:00"',
   })
-  @Validate(IsEndAfterStartConstraint) // ← endTime > startTime (agar dono hain)
+  @Validate(IsEndAfterStartConstraint)
   endTime?: string;
 }
 
@@ -284,5 +278,5 @@ export class NextAvailableQueryDto {
   @IsInt({ message: 'searchWindow must be an integer' })
   @Min(1, { message: 'searchWindow must be at least 1' })
   @Max(30, { message: 'searchWindow cannot exceed 30 working days' })
-  searchWindow?: number; // default: 30 working days
+  searchWindow?: number;
 }
