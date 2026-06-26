@@ -1,6 +1,7 @@
 import {
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -9,7 +10,7 @@ import { Notification } from './entities/notification.entity';
 import { Patient } from '../patient/entities/patient.entity';
 import { NotificationType } from './enums/notification-type.enum';
 
-// Fix: readable date format helper
+// Format date to readable string
 function formatDate(date: Date): string {
   return new Intl.DateTimeFormat('en-IN', {
     day: '2-digit',
@@ -22,7 +23,7 @@ function formatDate(date: Date): string {
   }).format(new Date(date));
 }
 
-// Fix: transform notification to include formatted date
+// Transform notification to include formatted date
 function formatNotification(notification: Notification) {
   return {
     ...notification,
@@ -59,21 +60,11 @@ export class NotificationService {
 
   /**
    * Internal helper to create notification
-   * @param patientId - must be a valid existing patient ID
+   * @param patientId
    */
   async createNotification(
     patientId: string, title: string, message: string, type: NotificationType, note: string | null,
   ): Promise<Notification> {
-    const patientExists = await this.patientRepo.findOne({
-      where: { id: patientId },
-    });
-
-    if (!patientExists) {
-      throw new NotFoundException(
-        `Patient with ID ${patientId} not found. Cannot create notification.`,
-      );
-    }
-
     const notification = this.notificationRepo.create({
       patientId,
       title,
@@ -88,7 +79,6 @@ export class NotificationService {
 
   /**
    * Get all notifications for logged-in patient (with pagination)
-   * Fix: meta aur success field add kiya, date format readable
    */
   async getNotifications(
     userId: string,
@@ -106,8 +96,6 @@ export class NotificationService {
       take: limit,
     });
 
-    const unreadCount = notifications.filter((n) => !n.isRead).length;
-
     return {
       success: true,
       message:
@@ -117,7 +105,6 @@ export class NotificationService {
       data: notifications.map(formatNotification),
       meta: {
         total,
-        unreadCount,
         page,
         limit,
         totalPages: Math.ceil(total / limit),
@@ -127,7 +114,6 @@ export class NotificationService {
 
   /**
    * Mark a single notification as read
-   * Fix: already-read notifications handled gracefully
    */
   async markAsRead(userId: string, notificationId: string) {
     const patient = await this.getPatientByUserId(userId);
@@ -146,11 +132,7 @@ export class NotificationService {
     }
 
     if (notification.isRead) {
-      return {
-        success: true,
-        message: 'Notification is already marked as read',
-        data: formatNotification(notification),
-      };
+      throw new BadRequestException('Notification is already marked as read');
     }
 
     notification.isRead = true;
