@@ -39,7 +39,7 @@ export class Appointment {
   @Column({ type: 'varchar', length: 5 })
   endTime: string; // HH:MM
 
-  @Column({ type: 'varchar', default: AppointmentStatus.BOOKED })
+  @Column({ type: 'varchar', default: AppointmentStatus.CONFIRMED })
   status: AppointmentStatus;
 
   @Column({ type: 'int', nullable: true, default: null })
@@ -47,6 +47,21 @@ export class Appointment {
 
   @Column({ type: 'boolean', default: false })
   reminderSent: boolean;
+
+  @Column({ type: 'timestamp', nullable: true, default: null })
+  checkedInAt: Date | null;
+
+  @Column({ type: 'int', nullable: true, default: null })
+  queuePosition: number | null;
+
+  @Column({ type: 'int', nullable: true, default: null })
+  estimatedWaitTime: number | null;
+
+  @Column({ type: 'timestamp', nullable: true, default: null })
+  servedAt: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true, default: null })
+  completedAt: Date | null;
 
   @CreateDateColumn()
   createdAt: Date;

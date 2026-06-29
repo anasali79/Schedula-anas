@@ -40,9 +40,13 @@ export class Doctor {
   @Column({ type: 'text', nullable: true })
   profileDetails: string | null;
 
+  @Column({ type: 'int', nullable: true, default: null })
+  currentServingToken: number | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
   @UpdateDateColumn()
   updatedAt: Date;
+  phone: null;
 }

@@ -7,10 +7,10 @@ import {
   forwardRef,
   Inject,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, DataSource } from 'typeorm';
-import { Cron } from '@nestjs/schedule';
+import { Repository, Not, DataSource, EntityManager } from 'typeorm';
 import { Appointment } from './entities/appointment.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
@@ -22,16 +22,13 @@ import { SlotStatus } from '../doctor/dto/availability.dto';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/enums/notification-type.enum';
 import { EmailService } from '../email/email.service';
-import { formatTime, formatDate, getTodayIST, getTomorrowIST } from '../common/utils/appointment.utils';
-
-// ─── Constants ────────────────────────────────────────────────────────────────
+import { formatTime, formatDate, getTodayIST } from '../common/utils/appointment.utils';
+import { AppointmentGateway, SOCKET_EVENTS } from '../sockets/appointment.gateway';
+import { QueueService } from './queue.service';
 
 const ARRIVAL_BUFFER_MINUTES = 5;
 const RESCHEDULE_CUTOFF_MINUTES = 30;
 const CANCEL_CUTOFF_MINUTES = 30;
-
-// ─── Notification Helpers ─────────────────────────────────────────────────────
-
 
 function buildAppointmentNotification(
   action: 'booked' | 'cancelled' | 'cancelled by the doctor' | 'rescheduled to',
@@ -75,147 +72,11 @@ export class AppointmentService {
     private readonly notificationService: NotificationService,
     private readonly emailService: EmailService,
     private readonly dataSource: DataSource,
-  ) {
+    private readonly queueService: QueueService,
 
-  }
-  /**
-   * Sends morning reminders for all booked appointments today.
-   * Updates reminderSent flag to prevent duplicate notifications.
-   */
-  @Cron('0 6 * * *', { timeZone: 'Asia/Kolkata' })
-  async sendMorningReminders(): Promise<void> {
-    this.logger.log('[Cron 6AM] Running morning reminder job...');
-
-    try {
-      const todayStr = getTodayIST();
-      this.logger.log(`[Cron 6AM] Fetching booked appointments for today (${todayStr})...`);
-
-      const appointments = await this.appointmentRepo.find({
-        where: {
-          date: todayStr,
-          status: AppointmentStatus.BOOKED,
-          reminderSent: false,
-        },
-        relations: { doctor: true, patient: { user: true } },
-      });
-
-      this.logger.log(`[Cron 6AM] Found ${appointments.length} appointments for today.`);
-
-      for (const appt of appointments) {
-        try {
-          const patientEmail = appt.patient?.user?.email;
-          const patientName = appt.patient?.fullName || 'Patient';
-          const doctorName = appt.doctor?.fullName || 'Doctor';
-
-          // 1. Email reminder
-          if (patientEmail) {
-            await this.emailService.sendAppointmentReminder(
-              patientEmail,
-              patientName,
-              doctorName,
-              appt.date,
-              appt.startTime,
-              appt.tokenNumber,
-            );
-            this.logger.log(`[Cron 6AM] Email sent to ${patientEmail} for appointment ${appt.id}`);
-          }
-
-          // 2. In-app notification
-          const notifMsg = `Friendly reminder — your appointment with Dr. ${doctorName} is today at ${formatTime(appt.startTime)}!`;
-          await this.notificationService.createNotification(
-            appt.patientId,
-            'Appointment Reminder 🗓',
-            notifMsg,
-            NotificationType.APPOINTMENT_REMINDER,
-            appt.tokenNumber ? `Token Number: ${appt.tokenNumber}` : null,
-          );
-          this.logger.log(`[Cron 6AM] In-app notification sent to patient ${appt.patientId}`);
-
-          // Mark reminderSent as true after successful send to prevent duplicates
-          appt.reminderSent = true;
-          await this.appointmentRepo.save(appt);
-
-        } catch (err: any) {
-          this.logger.error(
-            `[Cron 6AM] Failed for appointment ${appt.id}: ${err.message}`,
-            err.stack,
-          );
-          // Continue processing remaining appointments if one fails
-        }
-      }
-
-      this.logger.log('[Cron 6AM] Morning reminder job completed.');
-    } catch (err: any) {
-      this.logger.error(`[Cron 6AM] Job failed: ${err.message}`, err.stack);
-    }
-  }
-
-  /**
-   * Sends evening reminders for tomorrow's booked appointments.
-   */
-  @Cron('0 18 * * *', { timeZone: 'Asia/Kolkata' })
-  async sendEveningReminders(): Promise<void> {
-    this.logger.log('[Cron 6PM] Running evening reminder job for tomorrow...');
-
-    try {
-      const tomorrowStr = getTomorrowIST();
-      this.logger.log(`[Cron 6PM] Fetching booked appointments for tomorrow (${tomorrowStr})...`);
-
-      const appointments = await this.appointmentRepo.find({
-        where: {
-          date: tomorrowStr,
-          status: AppointmentStatus.BOOKED,
-        },
-        relations: { doctor: true, patient: { user: true } },
-      });
-
-      this.logger.log(`[Cron 6PM] Found ${appointments.length} appointments for tomorrow.`);
-
-      for (const appt of appointments) {
-        try {
-          const patientEmail = appt.patient?.user?.email;
-          const patientName = appt.patient?.fullName || 'Patient';
-          const doctorName = appt.doctor?.fullName || 'Doctor';
-
-          // 1. Email reminder
-          if (patientEmail) {
-            await this.emailService.sendAppointmentReminder(
-              patientEmail,
-              patientName,
-              doctorName,
-              appt.date,
-              appt.startTime,
-              appt.tokenNumber,
-            );
-            this.logger.log(`[Cron 6PM] Email sent to ${patientEmail} for appointment ${appt.id}`);
-          }
-
-          // 2. In-app notification
-          const notifMsg = `Reminder — you have an appointment with Dr. ${doctorName} tomorrow at ${formatTime(appt.startTime)}. Please be on time!`;
-          await this.notificationService.createNotification(
-            appt.patientId,
-            'Appointment Tomorrow 🗓',
-            notifMsg,
-            NotificationType.APPOINTMENT_REMINDER,
-            appt.tokenNumber ? `Token Number: ${appt.tokenNumber}` : null,
-          );
-          this.logger.log(`[Cron 6PM] In-app notification sent to patient ${appt.patientId}`);
-
-        } catch (err: any) {
-          this.logger.error(
-            `[Cron 6PM] Failed for appointment ${appt.id}: ${err.message}`,
-            err.stack,
-          );
-        }
-      }
-
-      this.logger.log('[Cron 6PM] Evening reminder job completed.');
-    } catch (err: any) {
-      this.logger.error(`[Cron 6PM] Job failed: ${err.message}`, err.stack);
-    }
-  }
-
-  // ─── Private Helpers ──────────────────────────────────────────────────────────
+    @Optional()
+    private readonly appointmentGateway: AppointmentGateway,
+  ) { }
 
   private async getPatientByUserId(userId: string): Promise<Patient> {
     const patient = await this.patientRepo.findOne({
@@ -223,24 +84,18 @@ export class AppointmentService {
       relations: { user: true },
     });
     if (!patient) {
-      throw new NotFoundException(
-        'Patient profile not found. Please create your profile first.',
-      );
+      throw new NotFoundException('Patient profile not found. Please create your profile first.');
     }
     return patient;
   }
 
-
   private async getDoctorByUserId(userId: string): Promise<Doctor> {
     const doctor = await this.doctorRepo.findOne({ where: { userId } });
     if (!doctor) {
-      throw new NotFoundException(
-        'Doctor profile not found. Please create your profile first.',
-      );
+      throw new NotFoundException('Doctor profile not found. Please create your profile first.');
     }
     return doctor;
   }
-
 
   private async sendNotification(
     patientId: string,
@@ -268,7 +123,8 @@ export class AppointmentService {
         appt.date,
         appt.startTime,
         appt.tokenNumber,
-        '9999999999', // Dummy contact number
+        appt.doctor.phone ?? null,
+        appt.id,
       );
     } catch (error) {
       this.logger.error('Failed to send booking confirmation email:', error);
@@ -315,7 +171,27 @@ export class AppointmentService {
     }
   }
 
-  // ─── 1. Book Appointment ──────────────────────────────────────────────────────
+  private async assignTokenNumber(
+    manager: EntityManager,
+    doctorId: string,
+    date: string,
+    startTime: string,
+    endTime: string,
+  ): Promise<number> {
+    const rawResult = (await manager
+      .createQueryBuilder(Appointment, 'appointment')
+      .select('MAX(appointment.tokenNumber)', 'max')
+      .where('appointment.doctorId = :doctorId', { doctorId })
+      .andWhere('appointment.date = :date', { date })
+      .andWhere('appointment.startTime = :startTime', { startTime })
+      .andWhere('appointment.endTime = :endTime', { endTime })
+      .setLock('pessimistic_write')
+      .getRawOne()) as unknown;
+
+    const maxTokenResult = rawResult as { max: string | null } | undefined;
+    const currentMax = maxTokenResult?.max ? parseInt(maxTokenResult.max, 10) : 0;
+    return currentMax + 1;
+  }
 
   async bookAppointment(userId: string, dto: BookAppointmentDto) {
     const patient = await this.getPatientByUserId(userId);
@@ -332,54 +208,77 @@ export class AppointmentService {
         patientId: patient.id,
         doctorId: dto.doctorId,
         date: dto.date,
-        status: AppointmentStatus.BOOKED,
+        status: AppointmentStatus.CONFIRMED,
       },
     });
     if (patientHasBookingOnDay) {
       throw new ConflictException('You already have an appointment with this doctor on this day');
     }
 
-    if (slotInfo.schedulingType === 'WAVE') {
-      const bookedCount = slotInfo.bookedCount ?? 0;
-      const maxPatients = slotInfo.maxPatients ?? 0;
-      if (bookedCount >= maxPatients) throw new ConflictException('This slot is already booked');
-    } else {
-      const existingBooking = await this.appointmentRepo.findOne({
-        where: {
-          doctorId: dto.doctorId,
-          date: dto.date,
-          startTime: dto.startTime,
-          endTime: dto.endTime,
-          status: AppointmentStatus.BOOKED,
-        },
-      });
-      if (existingBooking) throw new ConflictException('This slot is already booked');
-    }
-    let tokenNumber: number | null = null;
-    if (slotInfo.schedulingType === 'WAVE') {
-      const rawResult = (await this.appointmentRepo
-        .createQueryBuilder('appointment')
-        .select('MAX(appointment.tokenNumber)', 'max')
-        .where('appointment.doctorId = :doctorId', { doctorId: dto.doctorId })
-        .andWhere('appointment.date = :date', { date: dto.date })
-        .andWhere('appointment.startTime = :startTime', { startTime: dto.startTime })
-        .andWhere('appointment.endTime = :endTime', { endTime: dto.endTime })
-        .getRawOne()) as unknown;
-      const maxTokenResult = rawResult as { max: string | null } | undefined;
-      const currentMax = maxTokenResult?.max ? parseInt(maxTokenResult.max, 10) : 0;
-      tokenNumber = currentMax + 1;
-    }
-    const appointment = this.appointmentRepo.create({
-      doctorId: dto.doctorId,
-      patientId: patient.id,
-      date: dto.date,
-      startTime: dto.startTime,
-      endTime: dto.endTime,
-      status: AppointmentStatus.BOOKED,
-      tokenNumber,
-    });
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction('SERIALIZABLE');
 
-    const saved = await this.appointmentRepo.save(appointment);
+    let saved: Appointment;
+    try {
+      if (slotInfo.schedulingType === 'WAVE') {
+        const bookedCount = slotInfo.bookedCount ?? 0;
+        const maxPatients = slotInfo.maxPatients ?? 0;
+        if (bookedCount >= maxPatients) throw new ConflictException('This slot is already booked');
+      } else {
+        const existingBooking = await queryRunner.manager.findOne(Appointment, {
+          where: {
+            doctorId: dto.doctorId,
+            date: dto.date,
+            startTime: dto.startTime,
+            endTime: dto.endTime,
+            status: AppointmentStatus.CONFIRMED,
+          },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (existingBooking) throw new ConflictException('This slot is already booked');
+      }
+
+      let tokenNumber: number | null = null;
+      if (slotInfo.schedulingType === 'WAVE') {
+        tokenNumber = await this.assignTokenNumber(
+          queryRunner.manager,
+          dto.doctorId,
+          dto.date,
+          dto.startTime,
+          dto.endTime,
+        );
+      }
+
+      const appointment = this.appointmentRepo.create({
+        doctorId: dto.doctorId,
+        patientId: patient.id,
+        date: dto.date,
+        startTime: dto.startTime,
+        endTime: dto.endTime,
+        status: AppointmentStatus.CONFIRMED,
+        tokenNumber,
+      });
+
+      saved = await queryRunner.manager.save(appointment);
+
+      const todayStr = getTodayIST();
+      if (saved.date === todayStr) {
+        await this.queueService.recalculateQueue(saved.doctorId, saved.date, queryRunner.manager);
+      }
+
+      await queryRunner.commitTransaction();
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+
+    const todayStr = getTodayIST();
+    if (saved.date === todayStr) {
+      await this.queueService.broadcastQueueStatus(saved.doctorId, saved.date, this.dataSource.manager);
+    }
 
     const bookedNotif = buildAppointmentNotification('booked', doctor.fullName, dto.date, dto.startTime);
     await this.sendNotification(
@@ -389,6 +288,7 @@ export class AppointmentService {
       NotificationType.APPOINTMENT_BOOKED,
       bookedNotif.note,
     );
+
     const fullAppointment = await this.appointmentRepo.findOne({
       where: { id: saved.id },
       relations: { doctor: true, patient: { user: true } },
@@ -408,8 +308,6 @@ export class AppointmentService {
     };
   }
 
-  // ─── 2. Patient Appointment View ──────────────────────────────────────────────
-
   async getPatientAppointments(userId: string) {
     const patient = await this.getPatientByUserId(userId);
 
@@ -425,8 +323,6 @@ export class AppointmentService {
     };
   }
 
-  // ─── 3. Cancel Appointment ────────────────────────────────────────────────────
-
   async cancelAppointment(userId: string, appointmentId: string) {
     const patient = await this.getPatientByUserId(userId);
     const appointment = await this.appointmentRepo.findOne({
@@ -441,15 +337,49 @@ export class AppointmentService {
     if (appointment.status === AppointmentStatus.CANCELLED) {
       throw new BadRequestException('This appointment is already cancelled');
     }
-    // Do not allow cancelling rescheduled appointments
     if (appointment.status === AppointmentStatus.RESCHEDULED) {
       throw new BadRequestException('Cannot cancel an already rescheduled appointment');
     }
 
     this.validateCancelCutoff(appointment.date, appointment.startTime);
 
-    appointment.status = AppointmentStatus.CANCELLED;
-    await this.appointmentRepo.save(appointment);
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const app = await queryRunner.manager.findOne(Appointment, {
+        where: { id: appointmentId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!app || app.status === AppointmentStatus.CANCELLED) {
+        throw new BadRequestException('Appointment is already cancelled');
+      }
+
+      app.status = AppointmentStatus.CANCELLED;
+      await queryRunner.manager.save(app);
+
+      await this.queueService.recalculateQueue(app.doctorId, app.date, queryRunner.manager);
+      await queryRunner.commitTransaction();
+
+      appointment.status = AppointmentStatus.CANCELLED;
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+
+    this.appointmentGateway?.emitAppointmentEvent(SOCKET_EVENTS.CANCELLED, {
+      appointmentId: appointment.id,
+      patientId: appointment.patientId,
+      doctorId: appointment.doctorId,
+      status: AppointmentStatus.CANCELLED,
+      updatedAt: new Date().toISOString(),
+    });
+
+    await this.queueService.broadcastQueueStatus(appointment.doctorId, appointment.date, this.dataSource.manager);
 
     const cancelledNotif = buildAppointmentNotification('cancelled', appointment.doctor.fullName, appointment.date, appointment.startTime);
     await this.sendNotification(
@@ -469,8 +399,6 @@ export class AppointmentService {
       data: this.toPatientAppointmentResponse(appointment),
     };
   }
-
-  // ─── 3.5. Reschedule Appointment ──────────────────────────────────────────────
 
   async rescheduleAppointment(userId: string, appointmentId: string, dto: RescheduleAppointmentDto) {
     const patient = await this.getPatientByUserId(userId);
@@ -550,7 +478,7 @@ export class AppointmentService {
           date: dto.date,
           startTime: dto.startTime,
           endTime: dto.endTime,
-          status: AppointmentStatus.BOOKED,
+          status: AppointmentStatus.CONFIRMED,
         },
       });
       if (existingBooking) {
@@ -558,7 +486,9 @@ export class AppointmentService {
           appointment.doctorId, dto.date, dto.startTime, dto.endTime,
         );
         throw new ConflictException({
-          message: suggestion ? 'Requested slot is already booked. Here is the next available slot.' : 'Requested slot is already booked',
+          message: suggestion
+            ? 'Requested slot is already booked. Here is the next available slot.'
+            : 'Requested slot is already booked',
           ...(suggestion && { suggestedSlot: suggestion }),
         });
       }
@@ -569,7 +499,7 @@ export class AppointmentService {
         patientId: patient.id,
         doctorId: appointment.doctorId,
         date: dto.date,
-        status: AppointmentStatus.BOOKED,
+        status: AppointmentStatus.CONFIRMED,
         id: Not(appointmentId),
       },
     });
@@ -577,31 +507,38 @@ export class AppointmentService {
       throw new ConflictException('You already have an appointment with this doctor on this day');
     }
 
-    let tokenNumber: number | null = null;
-    if (slotInfo.schedulingType === 'WAVE') {
-      const rawResult = (await this.appointmentRepo
-        .createQueryBuilder('appointment')
-        .select('MAX(appointment.tokenNumber)', 'max')
-        .where('appointment.doctorId = :doctorId', { doctorId: appointment.doctorId })
-        .andWhere('appointment.date = :date', { date: dto.date })
-        .andWhere('appointment.startTime = :startTime', { startTime: dto.startTime })
-        .andWhere('appointment.endTime = :endTime', { endTime: dto.endTime })
-        .getRawOne()) as unknown;
-      const maxTokenResult = rawResult as { max: string | null } | undefined;
-      const currentMax = maxTokenResult?.max ? parseInt(maxTokenResult.max, 10) : 0;
-      tokenNumber = currentMax + 1;
-    }
-
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
     const previousDate = appointment.date;
     const previousStartTime = appointment.startTime;
 
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction('SERIALIZABLE');
+
+    let savedNewAppointment: Appointment;
+
     try {
-      appointment.status = AppointmentStatus.RESCHEDULED;
-      await queryRunner.manager.save(appointment);
+      const appToLock = await queryRunner.manager.findOne(Appointment, {
+        where: { id: appointment.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!appToLock || appToLock.status === AppointmentStatus.RESCHEDULED) {
+        throw new BadRequestException('Appointment is already rescheduled');
+      }
+
+      appToLock.status = AppointmentStatus.RESCHEDULED;
+      await queryRunner.manager.save(appToLock);
+
+      let tokenNumber: number | null = null;
+      if (slotInfo.schedulingType === 'WAVE') {
+        tokenNumber = await this.assignTokenNumber(
+          queryRunner.manager,
+          appointment.doctorId,
+          dto.date,
+          dto.startTime,
+          dto.endTime,
+        );
+      }
 
       const newAppointment = this.appointmentRepo.create({
         doctorId: appointment.doctorId,
@@ -609,55 +546,72 @@ export class AppointmentService {
         date: dto.date,
         startTime: dto.startTime,
         endTime: dto.endTime,
-        status: AppointmentStatus.BOOKED,
+        status: AppointmentStatus.CONFIRMED,
         tokenNumber,
       });
 
-      const saved = await queryRunner.manager.save(newAppointment);
-      await queryRunner.commitTransaction();
+      savedNewAppointment = await queryRunner.manager.save(newAppointment);
 
-      const rescheduledNotif = buildAppointmentNotification('rescheduled to', appointment.doctor.fullName, dto.date, dto.startTime);
-      await this.sendNotification(
-        patient.id,
-        'Appointment Rescheduled',
-        rescheduledNotif.message,
-        NotificationType.APPOINTMENT_RESCHEDULED,
-        rescheduledNotif.note,
-      );
-
-      const fullAppointment = await this.appointmentRepo.findOne({
-        where: { id: saved.id },
-        relations: { doctor: true, patient: { user: true } },
-      });
-
-      if (fullAppointment) {
-        this.sendRescheduleEmail(fullAppointment, previousDate, previousStartTime).catch((err) =>
-          console.error('Failed to send reschedule email:', err),
-        );
+      const todayStr = getTodayIST();
+      if (previousDate === todayStr) {
+        await this.queueService.recalculateQueue(appointment.doctorId, previousDate, queryRunner.manager);
+      }
+      if (savedNewAppointment.date === todayStr) {
+        await this.queueService.recalculateQueue(savedNewAppointment.doctorId, savedNewAppointment.date, queryRunner.manager);
       }
 
-      return {
-        message: 'Appointment rescheduled successfully',
-        data: {
-          previousAppointment: {
-            id: appointment.id,
-            date: appointment.date,
-            startTime: appointment.startTime,
-            endTime: appointment.endTime,
-            status: AppointmentStatus.RESCHEDULED,
-          },
-          newAppointment: this.toPatientAppointmentResponse(fullAppointment!),
-        },
-      };
+      await queryRunner.commitTransaction();
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw error;
     } finally {
       await queryRunner.release();
     }
-  }
 
-  // ─── 4. Doctor Appointment View ───────────────────────────────────────────────
+    const todayStr = getTodayIST();
+    if (previousDate === todayStr) {
+      await this.queueService.broadcastQueueStatus(appointment.doctorId, previousDate, this.dataSource.manager);
+    }
+    if (savedNewAppointment.date === todayStr) {
+      await this.queueService.broadcastQueueStatus(savedNewAppointment.doctorId, savedNewAppointment.date, this.dataSource.manager);
+    }
+
+    appointment.status = AppointmentStatus.RESCHEDULED;
+
+    const rescheduledNotif = buildAppointmentNotification('rescheduled to', appointment.doctor.fullName, dto.date, dto.startTime);
+    await this.sendNotification(
+      patient.id,
+      'Appointment Rescheduled',
+      rescheduledNotif.message,
+      NotificationType.APPOINTMENT_RESCHEDULED,
+      rescheduledNotif.note,
+    );
+
+    const fullNewAppointment = await this.appointmentRepo.findOne({
+      where: { id: savedNewAppointment.id },
+      relations: { doctor: true, patient: { user: true } },
+    });
+
+    if (fullNewAppointment) {
+      this.sendRescheduleEmail(fullNewAppointment, previousDate, previousStartTime).catch((err) =>
+        this.logger.error('Failed to send reschedule email:', err),
+      );
+    }
+
+    return {
+      message: 'Appointment rescheduled successfully',
+      data: {
+        previousAppointment: {
+          id: appointment.id,
+          date: appointment.date,
+          startTime: appointment.startTime,
+          endTime: appointment.endTime,
+          status: AppointmentStatus.RESCHEDULED,
+        },
+        newAppointment: this.toPatientAppointmentResponse(fullNewAppointment!),
+      },
+    };
+  }
 
   async getDoctorAppointments(userId: string, date?: string) {
     const doctor = await this.getDoctorByUserId(userId);
@@ -686,8 +640,6 @@ export class AppointmentService {
     };
   }
 
-  // ─── 4.5. Doctor Cancel Appointment ───────────────────────────────────────────
-
   async cancelAppointmentByDoctor(userId: string, appointmentId: string) {
     const doctor = await this.getDoctorByUserId(userId);
 
@@ -704,8 +656,44 @@ export class AppointmentService {
       throw new BadRequestException('This appointment is already cancelled');
     }
 
-    appointment.status = AppointmentStatus.CANCELLED;
-    const saved = await this.appointmentRepo.save(appointment);
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    let saved: Appointment;
+    try {
+      const app = await queryRunner.manager.findOne(Appointment, {
+        where: { id: appointmentId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!app || app.status === AppointmentStatus.CANCELLED) {
+        throw new BadRequestException('Appointment is already cancelled');
+      }
+
+      app.status = AppointmentStatus.CANCELLED;
+      saved = await queryRunner.manager.save(app);
+
+      await this.queueService.recalculateQueue(doctor.id, appointment.date, queryRunner.manager);
+      await queryRunner.commitTransaction();
+
+      appointment.status = AppointmentStatus.CANCELLED;
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+
+    this.appointmentGateway?.emitAppointmentEvent(SOCKET_EVENTS.CANCELLED, {
+      appointmentId: appointment.id,
+      patientId: appointment.patientId,
+      doctorId: appointment.doctorId,
+      status: AppointmentStatus.CANCELLED,
+      updatedAt: new Date().toISOString(),
+    });
+
+    await this.queueService.broadcastQueueStatus(doctor.id, appointment.date, this.dataSource.manager);
 
     const doctorCancelNotif = buildAppointmentNotification('cancelled by the doctor', appointment.doctor.fullName, appointment.date, appointment.startTime);
     await this.sendNotification(
@@ -717,7 +705,7 @@ export class AppointmentService {
     );
 
     this.sendCancellationEmail(appointment).catch((err) =>
-      console.error('Failed to send cancellation email:', err),
+      this.logger.error('Failed to send cancellation email:', err),
     );
 
     return {
@@ -725,8 +713,6 @@ export class AppointmentService {
       data: this.toDoctorAppointmentResponse(saved),
     };
   }
-
-  // ─── 5. Patient Dashboard Stats ───────────────────────────────────────────────
 
   async getPatientDashboardStats(userId: string) {
     const patient = await this.getPatientByUserId(userId);
@@ -737,7 +723,7 @@ export class AppointmentService {
       .createQueryBuilder('appointment')
       .where('appointment.patientId = :patientId', { patientId: patient.id })
       .andWhere('appointment.date >= :today', { today: todayStr })
-      .andWhere('appointment.status = :status', { status: AppointmentStatus.BOOKED })
+      .andWhere('appointment.status = :status', { status: AppointmentStatus.CONFIRMED })
       .getCount();
 
     const pastAppointments = await this.appointmentRepo
@@ -752,15 +738,12 @@ export class AppointmentService {
     };
   }
 
-  // ─── Private Validators ───────────────────────────────────────────────────────
-
   private validateFutureDateTime(date: string, startTime: string): void {
     const todayStr = getTodayIST();
 
     if (date < todayStr) throw new BadRequestException('Cannot book appointment for a past date');
 
     if (date === todayStr) {
-      // Use IST time for comparison
       const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
       const [h, m] = startTime.split(':').map(Number);
@@ -855,6 +838,11 @@ export class AppointmentService {
           consultationFee: Number(appointment.doctor.consultationFee),
         }
         : null,
+      checkedInAt: appointment.checkedInAt ?? null,
+      queuePosition: appointment.queuePosition ?? null,
+      estimatedWaitTime: appointment.estimatedWaitTime ?? null,
+      servedAt: appointment.servedAt ?? null,
+      completedAt: appointment.completedAt ?? null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
     };
@@ -878,8 +866,13 @@ export class AppointmentService {
           phone: appointment.patient.phone,
         }
         : null,
+      checkedInAt: appointment.checkedInAt ?? null,
+      queuePosition: appointment.queuePosition ?? null,
+      estimatedWaitTime: appointment.estimatedWaitTime ?? null,
+      servedAt: appointment.servedAt ?? null,
+      completedAt: appointment.completedAt ?? null,
       createdAt: appointment.createdAt,
       updatedAt: appointment.updatedAt,
     };
   }
-} 
+}

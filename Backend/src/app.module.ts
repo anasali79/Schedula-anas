@@ -9,7 +9,10 @@ import { DoctorModule } from './doctor/doctor.module';
 import { PatientModule } from './patient/patient.module';
 import { AppointmentModule } from './appointment/appointment.module';
 import { NotificationModule } from './notification/notification.module';
+import { CheckInModule } from './check-in/check-in.module';
 import { getDatabaseConfig } from './config/database.config';
+import { SocketsModule } from './sockets/sockets.module';
+import { ReminderModule } from './reminder/reminder.module';
 
 @Module({
   controllers: [AppController],
@@ -32,6 +35,9 @@ import { getDatabaseConfig } from './config/database.config';
     PatientModule,
     AppointmentModule,
     NotificationModule,
+    CheckInModule,
+    SocketsModule,
+    ReminderModule,
   ],
 })
 export class AppModule {}

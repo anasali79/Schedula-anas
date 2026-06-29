@@ -17,10 +17,14 @@ import { Role } from '../common/enums/role.enum';
 import { AppointmentService } from './appointment.service';
 import { BookAppointmentDto } from './dto/book-appointment.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
+import { ReminderService } from '../reminder/reminder.service';
 
 @Controller()
 export class AppointmentController {
-  constructor(private readonly appointmentService: AppointmentService) { }
+  constructor(
+    private readonly appointmentService: AppointmentService,
+    private readonly reminderService: ReminderService,
+  ) { }
 
   // ─── 1. Book Appointment (Patient only) ───────────────────────────────────────
   // POST /api/appointment
@@ -84,12 +88,11 @@ export class AppointmentController {
     return this.appointmentService.rescheduleAppointment(user.id, id, dto);
   }
 
-  // ─── 5. Test/Trigger Daily Reminders (Development/Admin/Testing) ────────────────
   // POST /api/appointment/test-reminders
   @Post('appointment/test-reminders')
   async triggerDailyReminders() {
-    await this.appointmentService.sendMorningReminders();
-    await this.appointmentService.sendEveningReminders();
+    await this.reminderService.sendMorningReminders();
+    await this.reminderService.sendEveningReminders();
     return {
       success: true,
       message: 'Reminder triggered successfully',
