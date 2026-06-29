@@ -199,7 +199,7 @@ export class AppointmentService {
     const doctor = await this.doctorRepo.findOne({ where: { id: dto.doctorId } });
     if (!doctor) throw new NotFoundException(`Doctor with ID ${dto.doctorId} not found`);
 
-    this.validateFutureDateTime(dto.date, dto.startTime);
+    this.validateBookingWindow(dto.date, dto.startTime);
 
     const slotInfo = await this.validateSlotExists(dto.doctorId, dto.date, dto.startTime, dto.endTime);
 
@@ -235,6 +235,7 @@ export class AppointmentService {
             status: AppointmentStatus.CONFIRMED,
           },
           lock: { mode: 'pessimistic_write' },
+          loadEagerRelations: false,
         });
         if (existingBooking) throw new ConflictException('This slot is already booked');
       }
@@ -351,6 +352,7 @@ export class AppointmentService {
       const app = await queryRunner.manager.findOne(Appointment, {
         where: { id: appointmentId },
         lock: { mode: 'pessimistic_write' },
+        loadEagerRelations: false,
       });
 
       if (!app || app.status === AppointmentStatus.CANCELLED) {
@@ -520,6 +522,7 @@ export class AppointmentService {
       const appToLock = await queryRunner.manager.findOne(Appointment, {
         where: { id: appointment.id },
         lock: { mode: 'pessimistic_write' },
+        loadEagerRelations: false,
       });
 
       if (!appToLock || appToLock.status === AppointmentStatus.RESCHEDULED) {
@@ -665,6 +668,7 @@ export class AppointmentService {
       const app = await queryRunner.manager.findOne(Appointment, {
         where: { id: appointmentId },
         lock: { mode: 'pessimistic_write' },
+        loadEagerRelations: false,
       });
 
       if (!app || app.status === AppointmentStatus.CANCELLED) {
@@ -750,6 +754,33 @@ export class AppointmentService {
       if (h * 60 + m <= currentMinutes) {
         throw new BadRequestException('Cannot book appointment for a past time slot');
       }
+    }
+  }
+
+  /**
+   * Booking Window Validation (Iteration 1)
+   * Appointments can only be booked for today's date.
+   * - Past dates  → rejected
+   * - Future dates (tomorrow or beyond) → rejected
+   * - Today, but already-passed time slot → rejected
+   */
+  private validateBookingWindow(date: string, startTime: string): void {
+    const todayStr = getTodayIST();
+
+    if (date < todayStr) {
+      throw new BadRequestException('Cannot book an appointment for a past date');
+    }
+
+    if (date > todayStr) {
+      throw new BadRequestException('Appointments can only be booked for today');
+    }
+
+    // date === todayStr — ensure the time slot hasn't already passed
+    const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
+    const [h, m] = startTime.split(':').map(Number);
+    if (h * 60 + m <= currentMinutes) {
+      throw new BadRequestException('Cannot book an appointment for a past time slot');
     }
   }
 
