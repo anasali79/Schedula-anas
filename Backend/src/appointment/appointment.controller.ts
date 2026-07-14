@@ -88,7 +88,7 @@ export class AppointmentController {
     return this.appointmentService.rescheduleAppointment(user.id, id, dto);
   }
 
-  // POST /api/appointment/test-reminders
+  // DEV ONLY — POST http://localhost:3000/api/appointment/test-reminders
   @Post('appointment/test-reminders')
   async triggerDailyReminders() {
     await this.reminderService.sendMorningReminders();

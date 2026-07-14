@@ -20,6 +20,7 @@ Schedula is a comprehensive doctor appointment booking application. This reposit
   - **Custom Overrides:** Date-specific schedule modifications.
   - **Unavailability & Auto-Reschedule:** Mark specific dates/times as unavailable and automatically reschedule affected patient appointments.
 - **Appointment Booking System:**
+  - **Booking Window (Iteration 1):** Restricted to today's date only (past and future bookings are rejected), with dedicated validation checks.
   - **Wave and Stream Strategies:** Advanced appointment queue management (e.g., token generation for Wave slots).
   - **Conflict Prevention:** Duplicate booking and overlapping schedule prevention.
 - **Email & Notification Engine:**
@@ -306,7 +307,7 @@ Allows patients to fetch all bookable slots for a specific doctor. Filters out p
 - **Query Params:** `date` (Required), `duration` (Optional)
 
 ### D. Book Appointment
-Patient books an available slot with a doctor.
+Patient books an available slot with a doctor. (Note: Bookings are restricted to today's date only in Iteration 1).
 
 - **Route:** `POST /api/appointment`
 - **Access:** Authenticated `PATIENT` only.
