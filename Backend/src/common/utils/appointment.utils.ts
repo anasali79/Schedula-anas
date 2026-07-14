@@ -52,3 +52,18 @@ export function getTomorrowIST(): string {
         day: '2-digit',
     }).format(tomorrow);
 }
+
+/**
+ * Get the maximum allowed future booking date string in YYYY-MM-DD (IST timezone)
+ * @param days Number of future days to add to today (e.g. 7 means today + 7 days)
+ */
+export function getMaxFutureDateIST(days: number): string {
+    const future = new Date();
+    future.setDate(future.getDate() + days);
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(future);
+}

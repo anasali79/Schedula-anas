@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -34,6 +35,15 @@ export class CreateDoctorProfileDto {
   @IsString()
   @IsOptional()
   profileDetails?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  allowFutureBooking?: boolean;
+
+  @IsInt()
+  @Min(0, { message: 'maxFutureBookingDays cannot be negative' })
+  @IsOptional()
+  maxFutureBookingDays?: number | null;
 }
 
 export class UpdateDoctorProfileDto extends PartialType(CreateDoctorProfileDto) {}

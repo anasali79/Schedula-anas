@@ -7,6 +7,8 @@ import { RecurringAvailability } from './doctor/entities/recurring-availability.
 import { CustomAvailability } from './doctor/entities/custom-availability.entity';
 import { Appointment } from './appointment/entities/appointment.entity';
 import { Notification } from './notification/entities/notification.entity';
+import { DoctorLeave } from './doctor/entities/leave.entity';
+import { CheckInRequest } from './check-in/entities/check-in-request.entity';
 
 config();
 
@@ -20,6 +22,8 @@ const shared: DataSourceOptions = {
     CustomAvailability,
     Appointment,
     Notification,
+    DoctorLeave,
+    CheckInRequest
   ],
   migrations: ['dist/migrations/*.js'],
   ssl:
@@ -32,11 +36,11 @@ export default new DataSource(
   process.env.DATABASE_URL
     ? { ...shared, url: process.env.DATABASE_URL }
     : {
-        ...shared,
-        host: process.env.DB_HOST,
-        port: Number(process.env.DB_PORT),
-        username: process.env.DB_USERNAME,
-        password: process.env.DB_PASSWORD,
-        database: process.env.DB_NAME,
-      },
+      ...shared,
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT),
+      username: process.env.DB_USERNAME,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+    },
 );

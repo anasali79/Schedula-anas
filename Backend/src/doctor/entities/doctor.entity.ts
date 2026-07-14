@@ -43,6 +43,12 @@ export class Doctor {
   @Column({ type: 'int', nullable: true, default: null })
   currentServingToken: number | null;
 
+  @Column({ type: 'boolean', default: true })
+  allowFutureBooking: boolean;
+
+  @Column({ type: 'int', nullable: true, default: null })
+  maxFutureBookingDays: number | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

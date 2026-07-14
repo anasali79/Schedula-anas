@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Controller,
+  Get,
   Param,
   ParseUUIDPipe,
   Post,
@@ -18,7 +19,48 @@ import { CheckInService } from './check-in.service';
 export class CheckInController {
   constructor(private readonly checkInService: CheckInService) {}
 
-  // ─── 1. Patient QR Check-In ───────────────────────────────────────────────────
+  // ─── Pending check-in requests (patient must approve QR kiosk scan) ───────────
+  @Get('check-in-requests/pending')
+  @Roles(Role.PATIENT)
+  getPendingCheckInRequests(@CurrentUser() user: { id: string }) {
+    return this.checkInService.getPendingCheckInRequests(user.id);
+  }
+
+  @Post('check-in-requests/:requestId/approve')
+  @Roles(Role.PATIENT)
+  approveCheckInRequest(
+    @CurrentUser() user: { id: string },
+    @Param(
+      'requestId',
+      new ParseUUIDPipe({
+        version: '4',
+        exceptionFactory: () =>
+          new BadRequestException('Invalid check-in request ID format'),
+      }),
+    )
+    requestId: string,
+  ) {
+    return this.checkInService.approveCheckInRequest(user.id, requestId);
+  }
+
+  @Post('check-in-requests/:requestId/reject')
+  @Roles(Role.PATIENT)
+  rejectCheckInRequest(
+    @CurrentUser() user: { id: string },
+    @Param(
+      'requestId',
+      new ParseUUIDPipe({
+        version: '4',
+        exceptionFactory: () =>
+          new BadRequestException('Invalid check-in request ID format'),
+      }),
+    )
+    requestId: string,
+  ) {
+    return this.checkInService.rejectCheckInRequest(user.id, requestId);
+  }
+
+  // ─── 1. Patient direct Check-In (from own phone, logged in) ─────────────────
   // POST /api/appointments/:id/check-in
   @Post(':id/check-in')
   @Roles(Role.PATIENT)

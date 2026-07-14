@@ -28,7 +28,7 @@ import {
 
 @Controller('doctor/availability')
 export class AvailabilityController {
-  constructor(private readonly availabilityService: AvailabilityService) {}
+  constructor(private readonly availabilityService: AvailabilityService) { }
 
   // ─── Recurring Availability ──────────────────────────────────────────────────
 
@@ -191,8 +191,9 @@ export class AvailabilityController {
       date,
     );
     return {
-      message:
-        result.slots.length === 0
+      message: (result as any).onLeave
+        ? `Doctor is on leave on ${date}`
+        : result.slots.length === 0
           ? `Doctor is not available on ${date}`
           : `Availability for ${date} retrieved successfully`,
       data: result,

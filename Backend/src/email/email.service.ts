@@ -189,7 +189,7 @@ export class EmailService {
                width="180" height="180"
                style="border: 2px solid #1a6b3c; border-radius: 8px; display: block; margin: 0 auto;" />
           <p style="margin: 8px 0 0 0; font-size: 12px; color: #9e9e9e;">
-            Present this QR code at the clinic reception to check in.
+            Scan this QR at the hospital kiosk. You will receive a notification on your phone — tap Approve to check in.
           </p>
         </div>`;
     } catch (err) {

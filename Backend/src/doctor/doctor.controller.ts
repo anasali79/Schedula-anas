@@ -165,6 +165,13 @@ export class DoctorController {
       query.date,
       query.duration,
     );
+    if ((slots as any).onLeave) {
+      return {
+        message: (slots as any).message || `Doctor is on leave on ${query.date}`,
+        onLeave: true,
+        data: [],
+      };
+    }
     return {
       message: 'Available slots retrieved successfully',
       data: slots,
