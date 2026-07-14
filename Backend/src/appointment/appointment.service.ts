@@ -14,6 +14,7 @@ import { Repository, Not, DataSource, EntityManager } from 'typeorm';
 import { Appointment } from './entities/appointment.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
+import { DoctorLeave } from '../doctor/entities/leave.entity';
 import { BookAppointmentDto } from './dto/book-appointment.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { AppointmentStatus } from '../common/enums/appointment-status.enum';
@@ -22,13 +23,40 @@ import { SlotStatus } from '../doctor/dto/availability.dto';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/enums/notification-type.enum';
 import { EmailService } from '../email/email.service';
-import { formatTime, formatDate, getTodayIST } from '../common/utils/appointment.utils';
+import { formatTime, formatDate, getTodayIST, getMaxFutureDateIST } from '../common/utils/appointment.utils';
 import { AppointmentGateway, SOCKET_EVENTS } from '../sockets/appointment.gateway';
 import { QueueService } from './queue.service';
 
 const ARRIVAL_BUFFER_MINUTES = 5;
 const RESCHEDULE_CUTOFF_MINUTES = 30;
 const CANCEL_CUTOFF_MINUTES = 30;
+
+function toMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function toTimeString(minutes: number): string {
+  const positiveMinutes = Math.max(0, minutes);
+  const h = Math.floor(positiveMinutes / 60);
+  const m = positiveMinutes % 60;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+}
+
+function assertValidDateFormat(date: string): void {
+  if (!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(date)) {
+    throw new BadRequestException('Invalid date format. Expected YYYY-MM-DD');
+  }
+  if (isNaN(Date.parse(`${date}T00:00:00`))) {
+    throw new BadRequestException('Invalid date');
+  }
+}
+
+function assertValidTimeFormat(time: string, fieldName = 'startTime'): void {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+    throw new BadRequestException(`Invalid ${fieldName} format. Expected HH:MM`);
+  }
+}
 
 function buildAppointmentNotification(
   action: 'booked' | 'cancelled' | 'cancelled by the doctor' | 'rescheduled to',
@@ -66,6 +94,9 @@ export class AppointmentService {
     @InjectRepository(Patient)
     private readonly patientRepo: Repository<Patient>,
 
+    @InjectRepository(DoctorLeave)
+    private readonly leaveRepo: Repository<DoctorLeave>,
+
     @Inject(forwardRef(() => AvailabilityService))
     private readonly availabilityService: AvailabilityService,
 
@@ -75,8 +106,14 @@ export class AppointmentService {
     private readonly queueService: QueueService,
 
     @Optional()
-    private readonly appointmentGateway: AppointmentGateway,
-  ) { }
+    private readonly appointmentGateway?: AppointmentGateway,
+  ) {
+    if (!this.appointmentGateway) {
+      this.logger.warn(
+        'AppointmentGateway is not available — real-time socket events (e.g. cancellation broadcasts) will be skipped.',
+      );
+    }
+  }
 
   private async getPatientByUserId(userId: string): Promise<Patient> {
     const patient = await this.patientRepo.findOne({
@@ -178,19 +215,75 @@ export class AppointmentService {
     startTime: string,
     endTime: string,
   ): Promise<number> {
-    const rawResult = (await manager
-      .createQueryBuilder(Appointment, 'appointment')
-      .select('MAX(appointment.tokenNumber)', 'max')
-      .where('appointment.doctorId = :doctorId', { doctorId })
-      .andWhere('appointment.date = :date', { date })
-      .andWhere('appointment.startTime = :startTime', { startTime })
-      .andWhere('appointment.endTime = :endTime', { endTime })
-      .setLock('pessimistic_write')
-      .getRawOne()) as unknown;
+    const appointments = await manager.find(Appointment, {
+      select: {
+        tokenNumber: true,
+      },
+      where: {
+        doctorId,
+        date,
+        startTime,
+        endTime,
+      },
+      lock: { mode: 'pessimistic_write' },
+      loadEagerRelations: false,
+    });
 
-    const maxTokenResult = rawResult as { max: string | null } | undefined;
-    const currentMax = maxTokenResult?.max ? parseInt(maxTokenResult.max, 10) : 0;
+    const tokens = appointments
+      .map((appt) => appt.tokenNumber)
+      .filter((t): t is number => t !== null);
+
+    const currentMax = tokens.length > 0 ? Math.max(...tokens) : 0;
     return currentMax + 1;
+  }
+
+
+  private async assertWaveCapacityAvailable(
+    manager: EntityManager,
+    doctorId: string,
+    date: string,
+    startTime: string,
+    endTime: string,
+    maxPatients: number,
+  ): Promise<void> {
+    const confirmedCount = await manager.count(Appointment, {
+      where: {
+        doctorId,
+        date,
+        startTime,
+        endTime,
+        status: AppointmentStatus.CONFIRMED,
+      },
+    });
+
+    if (confirmedCount >= maxPatients) {
+      throw new ConflictException('This slot is already booked');
+    }
+  }
+
+  private async assertNoDuplicateBookingOnDay(
+    manager: EntityManager,
+    patientId: string,
+    doctorId: string,
+    date: string,
+    excludeAppointmentId?: string,
+  ): Promise<void> {
+    const qb = manager
+      .createQueryBuilder(Appointment, 'appointment')
+      .setLock('pessimistic_write')
+      .where('appointment.patientId = :patientId', { patientId })
+      .andWhere('appointment.doctorId = :doctorId', { doctorId })
+      .andWhere('appointment.date = :date', { date })
+      .andWhere('appointment.status = :status', { status: AppointmentStatus.CONFIRMED });
+
+    if (excludeAppointmentId) {
+      qb.andWhere('appointment.id != :excludeId', { excludeId: excludeAppointmentId });
+    }
+
+    const existing = await qb.getOne();
+    if (existing) {
+      throw new ConflictException('You already have an appointment with this doctor on this day');
+    }
   }
 
   async bookAppointment(userId: string, dto: BookAppointmentDto) {
@@ -199,9 +292,7 @@ export class AppointmentService {
     const doctor = await this.doctorRepo.findOne({ where: { id: dto.doctorId } });
     if (!doctor) throw new NotFoundException(`Doctor with ID ${dto.doctorId} not found`);
 
-    this.validateBookingWindow(dto.date, dto.startTime);
-
-    const slotInfo = await this.validateSlotExists(dto.doctorId, dto.date, dto.startTime, dto.endTime);
+    await this.validateBookingWindow(dto.doctorId, dto.date, dto.startTime);
 
     const patientHasBookingOnDay = await this.appointmentRepo.findOne({
       where: {
@@ -215,16 +306,31 @@ export class AppointmentService {
       throw new ConflictException('You already have an appointment with this doctor on this day');
     }
 
+    const slotInfo = await this.validateSlotExists(dto.doctorId, dto.date, dto.startTime, dto.endTime);
+
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction('SERIALIZABLE');
 
     let saved: Appointment;
     try {
+
+      await this.assertNoDuplicateBookingOnDay(queryRunner.manager, patient.id, dto.doctorId, dto.date);
+
       if (slotInfo.schedulingType === 'WAVE') {
-        const bookedCount = slotInfo.bookedCount ?? 0;
-        const maxPatients = slotInfo.maxPatients ?? 0;
-        if (bookedCount >= maxPatients) throw new ConflictException('This slot is already booked');
+        await queryRunner.manager.find(Appointment, {
+          where: { doctorId: dto.doctorId, date: dto.date, startTime: dto.startTime, endTime: dto.endTime },
+          lock: { mode: 'pessimistic_write' },
+          loadEagerRelations: false,
+        });
+        await this.assertWaveCapacityAvailable(
+          queryRunner.manager,
+          dto.doctorId,
+          dto.date,
+          dto.startTime,
+          dto.endTime,
+          slotInfo.maxPatients ?? 0,
+        );
       } else {
         const existingBooking = await queryRunner.manager.findOne(Appointment, {
           where: {
@@ -299,9 +405,7 @@ export class AppointmentService {
       throw new NotFoundException('Appointment not found after save');
     }
 
-    this.sendBookingEmail(fullAppointment).catch((err) =>
-      this.logger.error('Failed to send booking confirmation email:', err),
-    );
+    this.sendBookingEmail(fullAppointment);
 
     return {
       message: 'Appointment booked successfully',
@@ -364,8 +468,6 @@ export class AppointmentService {
 
       await this.queueService.recalculateQueue(app.doctorId, app.date, queryRunner.manager);
       await queryRunner.commitTransaction();
-
-      appointment.status = AppointmentStatus.CANCELLED;
     } catch (err) {
       await queryRunner.rollbackTransaction();
       throw err;
@@ -373,17 +475,38 @@ export class AppointmentService {
       await queryRunner.release();
     }
 
+    // Re-fetch the authoritative post-commit state instead of manually
+    // mutating the pre-transaction `appointment` object, so the response and
+    // downstream side effects (notification/email/socket) always reflect
+    // exactly what was persisted.
+    const updatedAppointment = await this.appointmentRepo.findOne({
+      where: { id: appointmentId },
+      relations: { doctor: true, patient: { user: true } },
+    });
+    if (!updatedAppointment) {
+      throw new NotFoundException('Appointment not found after cancellation');
+    }
+
     this.appointmentGateway?.emitAppointmentEvent(SOCKET_EVENTS.CANCELLED, {
-      appointmentId: appointment.id,
-      patientId: appointment.patientId,
-      doctorId: appointment.doctorId,
+      appointmentId: updatedAppointment.id,
+      patientId: updatedAppointment.patientId,
+      doctorId: updatedAppointment.doctorId,
       status: AppointmentStatus.CANCELLED,
       updatedAt: new Date().toISOString(),
     });
 
-    await this.queueService.broadcastQueueStatus(appointment.doctorId, appointment.date, this.dataSource.manager);
+    await this.queueService.broadcastQueueStatus(
+      updatedAppointment.doctorId,
+      updatedAppointment.date,
+      this.dataSource.manager,
+    );
 
-    const cancelledNotif = buildAppointmentNotification('cancelled', appointment.doctor.fullName, appointment.date, appointment.startTime);
+    const cancelledNotif = buildAppointmentNotification(
+      'cancelled',
+      updatedAppointment.doctor.fullName,
+      updatedAppointment.date,
+      updatedAppointment.startTime,
+    );
     await this.sendNotification(
       patient.id,
       'Appointment Cancelled',
@@ -392,13 +515,11 @@ export class AppointmentService {
       cancelledNotif.note,
     );
 
-    this.sendCancellationEmail(appointment).catch((err) =>
-      this.logger.error('Failed to send cancellation email:', err),
-    );
+    this.sendCancellationEmail(updatedAppointment);
 
     return {
       message: 'Appointment cancelled successfully',
-      data: this.toPatientAppointmentResponse(appointment),
+      data: this.toPatientAppointmentResponse(updatedAppointment),
     };
   }
 
@@ -435,6 +556,40 @@ export class AppointmentService {
 
     const doctor = await this.doctorRepo.findOne({ where: { id: appointment.doctorId } });
     if (!doctor) throw new NotFoundException(`Doctor with ID ${appointment.doctorId} not found`);
+
+    // ── Doctor leave check ──────────────────────────────────────────────────
+    const leaveOnRescheduleDate = await this.leaveRepo.findOne({
+      where: { doctorId: appointment.doctorId, date: dto.date },
+    });
+    if (leaveOnRescheduleDate) {
+      throw new BadRequestException(
+        'Doctor is unavailable on this date. Please select another available date.',
+      );
+    }
+
+    // ── Future-booking policy check ─────────────────────────────────────────
+    const todayStrReschedule = getTodayIST();
+    if (!doctor.allowFutureBooking) {
+      if (dto.date > todayStrReschedule) {
+        throw new BadRequestException(
+          'This doctor does not accept future appointments. Appointments can only be rescheduled to today.',
+        );
+      }
+    } else {
+      const configuredDays = doctor.maxFutureBookingDays;
+      if (configuredDays !== null && configuredDays !== undefined && configuredDays < 0) {
+        throw new BadRequestException(
+          'Invalid doctor availability configuration: maxFutureBookingDays cannot be negative',
+        );
+      }
+      const maxDays = (configuredDays !== null && configuredDays !== undefined) ? configuredDays : 7;
+      const maxDateStr = getMaxFutureDateIST(maxDays);
+      if (dto.date > maxDateStr) {
+        throw new BadRequestException(
+          `Rescheduled date exceeds the allowed future booking range. You can book up to ${maxDays} day(s) in advance (until ${maxDateStr}).`,
+        );
+      }
+    }
 
     let slotInfo: {
       startTime: string;
@@ -529,6 +684,44 @@ export class AppointmentService {
         throw new BadRequestException('Appointment is already rescheduled');
       }
 
+
+      await this.assertNoDuplicateBookingOnDay(
+        queryRunner.manager,
+        patient.id,
+        appointment.doctorId,
+        dto.date,
+        appointment.id,
+      );
+
+      if (slotInfo.schedulingType === 'WAVE') {
+        await queryRunner.manager.find(Appointment, {
+          where: { doctorId: appointment.doctorId, date: dto.date, startTime: dto.startTime, endTime: dto.endTime },
+          lock: { mode: 'pessimistic_write' },
+          loadEagerRelations: false,
+        });
+        await this.assertWaveCapacityAvailable(
+          queryRunner.manager,
+          appointment.doctorId,
+          dto.date,
+          dto.startTime,
+          dto.endTime,
+          slotInfo.maxPatients ?? 0,
+        );
+      } else {
+        const existingBooking = await queryRunner.manager.findOne(Appointment, {
+          where: {
+            doctorId: appointment.doctorId,
+            date: dto.date,
+            startTime: dto.startTime,
+            endTime: dto.endTime,
+            status: AppointmentStatus.CONFIRMED,
+          },
+          lock: { mode: 'pessimistic_write' },
+          loadEagerRelations: false,
+        });
+        if (existingBooking) throw new ConflictException('Requested slot is already booked');
+      }
+
       appToLock.status = AppointmentStatus.RESCHEDULED;
       await queryRunner.manager.save(appToLock);
 
@@ -579,9 +772,7 @@ export class AppointmentService {
       await this.queueService.broadcastQueueStatus(savedNewAppointment.doctorId, savedNewAppointment.date, this.dataSource.manager);
     }
 
-    appointment.status = AppointmentStatus.RESCHEDULED;
-
-    const rescheduledNotif = buildAppointmentNotification('rescheduled to', appointment.doctor.fullName, dto.date, dto.startTime);
+    const rescheduledNotif = buildAppointmentNotification('rescheduled to', doctor.fullName, dto.date, dto.startTime);
     await this.sendNotification(
       patient.id,
       'Appointment Rescheduled',
@@ -596,9 +787,7 @@ export class AppointmentService {
     });
 
     if (fullNewAppointment) {
-      this.sendRescheduleEmail(fullNewAppointment, previousDate, previousStartTime).catch((err) =>
-        this.logger.error('Failed to send reschedule email:', err),
-      );
+      this.sendRescheduleEmail(fullNewAppointment, previousDate, previousStartTime);
     }
 
     return {
@@ -606,8 +795,8 @@ export class AppointmentService {
       data: {
         previousAppointment: {
           id: appointment.id,
-          date: appointment.date,
-          startTime: appointment.startTime,
+          date: previousDate,
+          startTime: previousStartTime,
           endTime: appointment.endTime,
           status: AppointmentStatus.RESCHEDULED,
         },
@@ -663,7 +852,6 @@ export class AppointmentService {
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
-    let saved: Appointment;
     try {
       const app = await queryRunner.manager.findOne(Appointment, {
         where: { id: appointmentId },
@@ -676,45 +864,57 @@ export class AppointmentService {
       }
 
       app.status = AppointmentStatus.CANCELLED;
-      saved = await queryRunner.manager.save(app);
+      await queryRunner.manager.save(app);
 
       await this.queueService.recalculateQueue(doctor.id, appointment.date, queryRunner.manager);
       await queryRunner.commitTransaction();
-
-      appointment.status = AppointmentStatus.CANCELLED;
     } catch (err) {
       await queryRunner.rollbackTransaction();
       throw err;
     } finally {
       await queryRunner.release();
     }
+    const updatedAppointment = await this.appointmentRepo.findOne({
+      where: { id: appointmentId },
+      relations: { doctor: true, patient: { user: true } },
+    });
+    if (!updatedAppointment) {
+      throw new NotFoundException('Appointment not found after cancellation');
+    }
 
     this.appointmentGateway?.emitAppointmentEvent(SOCKET_EVENTS.CANCELLED, {
-      appointmentId: appointment.id,
-      patientId: appointment.patientId,
-      doctorId: appointment.doctorId,
+      appointmentId: updatedAppointment.id,
+      patientId: updatedAppointment.patientId,
+      doctorId: updatedAppointment.doctorId,
       status: AppointmentStatus.CANCELLED,
       updatedAt: new Date().toISOString(),
     });
 
-    await this.queueService.broadcastQueueStatus(doctor.id, appointment.date, this.dataSource.manager);
+    await this.queueService.broadcastQueueStatus(
+      doctor.id,
+      updatedAppointment.date,
+      this.dataSource.manager,
+    );
 
-    const doctorCancelNotif = buildAppointmentNotification('cancelled by the doctor', appointment.doctor.fullName, appointment.date, appointment.startTime);
+    const doctorCancelNotif = buildAppointmentNotification(
+      'cancelled by the doctor',
+      updatedAppointment.doctor.fullName,
+      updatedAppointment.date,
+      updatedAppointment.startTime,
+    );
     await this.sendNotification(
-      appointment.patientId,
+      updatedAppointment.patientId,
       'Appointment Cancelled by Doctor',
       doctorCancelNotif.message,
       NotificationType.APPOINTMENT_CANCELLED,
       doctorCancelNotif.note,
     );
 
-    this.sendCancellationEmail(appointment).catch((err) =>
-      this.logger.error('Failed to send cancellation email:', err),
-    );
+    this.sendCancellationEmail(updatedAppointment);
 
     return {
       message: 'Appointment cancelled successfully',
-      data: this.toDoctorAppointmentResponse(saved),
+      data: this.toDoctorAppointmentResponse(updatedAppointment),
     };
   }
 
@@ -743,6 +943,9 @@ export class AppointmentService {
   }
 
   private validateFutureDateTime(date: string, startTime: string): void {
+    assertValidDateFormat(date);
+    assertValidTimeFormat(startTime);
+
     const todayStr = getTodayIST();
 
     if (date < todayStr) throw new BadRequestException('Cannot book appointment for a past date');
@@ -756,31 +959,131 @@ export class AppointmentService {
       }
     }
   }
+  private async validateBookingWindow(doctorId: string, date: string, startTime: string): Promise<void> {
+    assertValidDateFormat(date);
+    assertValidTimeFormat(startTime);
 
-  /**
-   * Booking Window Validation (Iteration 1)
-   * Appointments can only be booked for today's date.
-   * - Past dates  → rejected
-   * - Future dates (tomorrow or beyond) → rejected
-   * - Today, but already-passed time slot → rejected
-   */
-  private validateBookingWindow(date: string, startTime: string): void {
     const todayStr = getTodayIST();
 
     if (date < todayStr) {
       throw new BadRequestException('Cannot book an appointment for a past date');
     }
-
-    if (date > todayStr) {
-      throw new BadRequestException('Appointments can only be booked for today');
+    const doctor = await this.doctorRepo.findOne({ where: { id: doctorId } });
+    if (!doctor) {
+      throw new NotFoundException(`Doctor with ID ${doctorId} not found`);
+    }
+    const leaveRecord = await this.leaveRepo.findOne({
+      where: { doctorId, date },
+    });
+    if (leaveRecord) {
+      throw new BadRequestException(
+        'Doctor is unavailable on this date. Please select another available date.',
+      );
     }
 
-    // date === todayStr — ensure the time slot hasn't already passed
+    if (!doctor.allowFutureBooking) {
+      if (date > todayStr) {
+        throw new BadRequestException(
+          'This doctor does not accept future appointments. Appointments can only be booked for today.',
+        );
+      }
+    } else {
+      const configuredDays = doctor.maxFutureBookingDays;
+
+      if (configuredDays !== null && configuredDays !== undefined && configuredDays < 0) {
+        throw new BadRequestException(
+          'Invalid doctor availability configuration: maxFutureBookingDays cannot be negative',
+        );
+      }
+
+      const maxDays = (configuredDays !== null && configuredDays !== undefined) ? configuredDays : 7;
+      const maxDateStr = getMaxFutureDateIST(maxDays);
+
+      if (date > maxDateStr) {
+        throw new BadRequestException(
+          `Booking date exceeds the allowed future booking range. You can book up to ${maxDays} day(s) in advance (until ${maxDateStr}).`,
+        );
+      }
+    }
     const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
     const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
-    const [h, m] = startTime.split(':').map(Number);
-    if (h * 60 + m <= currentMinutes) {
-      throw new BadRequestException('Cannot book an appointment for a past time slot');
+
+    if (date === todayStr) {
+      const [h, m] = startTime.split(':').map(Number);
+      const slotMinutes = h * 60 + m;
+      if (slotMinutes <= currentMinutes) {
+        throw new BadRequestException('Cannot book an appointment for a past time slot');
+      }
+    }
+    if (date !== todayStr) {
+      return;
+    }
+    const intervals = await this.availabilityService.getDoctorIntervalsForDate(doctorId, date);
+    if (!intervals || intervals.length === 0) {
+      throw new BadRequestException('Doctor is not available today');
+    }
+    const intervalWindows: Array<{ open: number; close: number; openStr: string; closeStr: string }> = [];
+
+    for (const interval of intervals) {
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(interval.startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(interval.endTime)) {
+        throw new BadRequestException('Invalid consultation timings: invalid time format in availability');
+      }
+      const startMin = toMinutes(interval.startTime);
+      const endMin = toMinutes(interval.endTime);
+
+      if (startMin >= endMin) {
+        throw new BadRequestException(
+          `Invalid consultation timings: start time (${interval.startTime}) must be before end time (${interval.endTime})`,
+        );
+      }
+
+      const windowOpen = Math.max(0, startMin - 120);
+      const windowClose = endMin - 60;
+
+      if (windowOpen >= windowClose) {
+        continue;
+      }
+
+      intervalWindows.push({
+        open: windowOpen,
+        close: windowClose,
+        openStr: formatTime(toTimeString(windowOpen)),
+        closeStr: formatTime(toTimeString(windowClose)),
+      });
+    }
+
+    if (intervalWindows.length === 0) {
+      throw new BadRequestException(
+        'Doctor\'s consultation sessions are too short to derive a valid booking window',
+      );
+    }
+    const insideWindow = intervalWindows.some(
+      (w) => currentMinutes >= w.open && currentMinutes <= w.close,
+    );
+
+    if (!insideWindow) {
+      const allNotYetOpen = intervalWindows.every((w) => currentMinutes < w.open);
+      const allClosed = intervalWindows.every((w) => currentMinutes > w.close);
+
+      if (allNotYetOpen) {
+        const earliest = intervalWindows.reduce((a, b) => (a.open < b.open ? a : b));
+        throw new BadRequestException(
+          `Booking window is not open yet. It opens at ${earliest.openStr}`,
+        );
+      }
+
+      if (allClosed) {
+        const latest = intervalWindows.reduce((a, b) => (a.close > b.close ? a : b));
+        throw new BadRequestException(
+          `Booking window has closed. It closed at ${latest.closeStr}`,
+        );
+      }
+      const windowSummary = intervalWindows
+        .map((w) => `${w.openStr}–${w.closeStr}`)
+        .join(', ');
+      throw new BadRequestException(
+        `Booking is not allowed at this time. Available booking windows today: ${windowSummary}`,
+      );
     }
   }
 

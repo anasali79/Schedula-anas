@@ -14,6 +14,7 @@ import {
   Validate,
   registerDecorator,
   ValidationOptions,
+  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { DayOfWeek } from '../entities/recurring-availability.entity';
@@ -141,6 +142,15 @@ export class CreateRecurringAvailabilityDto {
   @IsInt({ message: 'maxPatients must be an integer' })
   @Min(1, { message: 'maxPatients must be at least 1' })
   maxPatients?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  allowFutureBooking?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0, { message: 'maxFutureBookingDays cannot be negative' })
+  maxFutureBookingDays?: number | null;
 }
 
 export class UpdateRecurringAvailabilityDto extends PartialType(CreateRecurringAvailabilityDto) { }
@@ -193,6 +203,15 @@ export class CreateCustomAvailabilityDto {
   @IsInt({ message: 'maxPatients must be an integer' })
   @Min(1, { message: 'maxPatients must be at least 1' })
   maxPatients?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  allowFutureBooking?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0, { message: 'maxFutureBookingDays cannot be negative' })
+  maxFutureBookingDays?: number | null;
 }
 
 // ─── Query / Utility DTOs ─────────────────────────────────────────────────────
@@ -279,4 +298,17 @@ export class NextAvailableQueryDto {
   @Min(1, { message: 'searchWindow must be at least 1' })
   @Max(30, { message: 'searchWindow cannot exceed 30 working days' })
   searchWindow?: number;
+}
+
+// ─── Update Availability Config DTO ───────────────────────────────────────────
+
+export class UpdateAvailabilityConfigDto {
+  @IsOptional()
+  @IsBoolean()
+  allowFutureBooking?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0, { message: 'maxFutureBookingDays cannot be negative' })
+  maxFutureBookingDays?: number | null;
 }

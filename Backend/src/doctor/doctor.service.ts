@@ -192,6 +192,8 @@ export class DoctorService {
       qualification: doctor.qualification,
       consultationHours: mapRecurringToConsultationHours(recurring),
       profileDetails: doctor.profileDetails,
+      allowFutureBooking: doctor.allowFutureBooking,
+      maxFutureBookingDays: doctor.maxFutureBookingDays,
       createdAt: doctor.createdAt,
       updatedAt: doctor.updatedAt,
     };
@@ -216,6 +218,8 @@ export class DoctorService {
       consultationFee: Number(profile.consultationFee),
       consultationHours: mapRecurringToConsultationHours(recurring),
       profileDetails: profile.profileDetails,
+      allowFutureBooking: profile.allowFutureBooking,
+      maxFutureBookingDays: profile.maxFutureBookingDays,
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
     };

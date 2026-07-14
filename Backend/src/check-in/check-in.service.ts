@@ -7,7 +7,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, LessThan } from 'typeorm';
 import { Appointment } from '../appointment/entities/appointment.entity';
 import { Doctor } from '../doctor/entities/doctor.entity';
 import { Patient } from '../patient/entities/patient.entity';
@@ -15,6 +15,10 @@ import { AppointmentStatus } from '../common/enums/appointment-status.enum';
 import { getTodayIST } from '../common/utils/appointment.utils';
 import { AppointmentGateway, SOCKET_EVENTS } from '../sockets/appointment.gateway';
 import { QueueService } from '../appointment/queue.service';
+import { CheckInRequest } from './entities/check-in-request.entity';
+import { CheckInRequestStatus } from './enums/check-in-request-status.enum';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/enums/notification-type.enum';
 
 @Injectable()
 export class CheckInService {
@@ -28,8 +32,12 @@ export class CheckInService {
     @InjectRepository(Patient)
     private readonly patientRepo: Repository<Patient>,
 
+    @InjectRepository(CheckInRequest)
+    private readonly checkInRequestRepo: Repository<CheckInRequest>,
+
     private readonly queueService: QueueService,
     private readonly dataSource: DataSource,
+    private readonly notificationService: NotificationService,
 
     @Optional()
     private readonly appointmentGateway: AppointmentGateway,
@@ -450,5 +458,210 @@ export class CheckInService {
       success: true,
       message: 'Appointment marked as no-show successfully',
     };
+  }
+
+  // ─── 6. Kiosk QR Scan → Request patient approval (no direct check-in) ────────
+
+  async requestCheckInFromKiosk(appointmentId: string) {
+    const appointment = await this.appointmentRepo.findOne({
+      where: { id: appointmentId },
+      relations: { doctor: true, patient: { user: true } },
+    });
+
+    if (!appointment) {
+      throw new NotFoundException(`Appointment with ID ${appointmentId} not found`);
+    }
+
+    const todayStr = getTodayIST();
+    if (appointment.date !== todayStr) {
+      throw new BadRequestException(
+        'Check-in is only allowed on the appointment date',
+      );
+    }
+
+    if (appointment.status !== AppointmentStatus.CONFIRMED) {
+      throw new BadRequestException(
+        `Cannot request check-in. Appointment status is ${appointment.status}`,
+      );
+    }
+
+    await this.expireStaleRequests(appointment.patientId);
+
+    const existingPending = await this.checkInRequestRepo.findOne({
+      where: {
+        appointmentId,
+        status: CheckInRequestStatus.PENDING,
+      },
+    });
+
+    if (existingPending && existingPending.expiresAt > new Date()) {
+      return {
+        success: true,
+        message: 'Check-in request already sent. Waiting for patient approval.',
+        data: {
+          requestId: existingPending.id,
+          expiresAt: existingPending.expiresAt.toISOString(),
+        },
+      };
+    }
+
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    const request = await this.checkInRequestRepo.save(
+      this.checkInRequestRepo.create({
+        appointmentId: appointment.id,
+        patientId: appointment.patientId,
+        status: CheckInRequestStatus.PENDING,
+        expiresAt,
+      }),
+    );
+
+    const title = 'Check-in request at hospital';
+    const message = `Someone scanned your QR at the clinic. Approve only if you are at the hospital for Dr. ${appointment.doctor?.fullName ?? 'your doctor'}.`;
+
+    await this.notificationService.createNotification(
+      appointment.patientId,
+      title,
+      message,
+      NotificationType.CHECK_IN_REQUEST,
+      JSON.stringify({ checkInRequestId: request.id, appointmentId: appointment.id }),
+    );
+
+    this.appointmentGateway?.emitCheckInRequest(appointment.patientId, {
+      requestId: request.id,
+      appointmentId: appointment.id,
+      title,
+      message,
+      expiresAt: expiresAt.toISOString(),
+      doctorName: appointment.doctor?.fullName,
+      appointmentTime: appointment.startTime,
+    });
+
+    return {
+      success: true,
+      message: 'Check-in request sent to patient. Waiting for approval on their phone.',
+      data: {
+        requestId: request.id,
+        expiresAt: expiresAt.toISOString(),
+      },
+    };
+  }
+
+  async getPendingCheckInRequests(userId: string) {
+    const patient = await this.getPatientByUserId(userId);
+    await this.expireStaleRequests(patient.id);
+
+    const requests = await this.checkInRequestRepo.find({
+      where: {
+        patientId: patient.id,
+        status: CheckInRequestStatus.PENDING,
+      },
+      relations: { appointment: { doctor: true } },
+      order: { createdAt: 'DESC' },
+    });
+
+    const active = requests.filter((r) => r.expiresAt > new Date());
+
+    return {
+      success: true,
+      message:
+        active.length > 0
+          ? 'Pending check-in requests retrieved'
+          : 'No pending check-in requests',
+      data: active.map((r) => ({
+        id: r.id,
+        appointmentId: r.appointmentId,
+        expiresAt: r.expiresAt.toISOString(),
+        createdAt: r.createdAt.toISOString(),
+        appointment: r.appointment
+          ? {
+              date: r.appointment.date,
+              startTime: r.appointment.startTime,
+              endTime: r.appointment.endTime,
+              doctorName: r.appointment.doctor?.fullName,
+            }
+          : null,
+      })),
+    };
+  }
+
+  async approveCheckInRequest(userId: string, requestId: string) {
+    const patient = await this.getPatientByUserId(userId);
+    const request = await this.getPendingRequestOrFail(requestId, patient.id);
+
+    request.status = CheckInRequestStatus.APPROVED;
+    request.respondedAt = new Date();
+    await this.checkInRequestRepo.save(request);
+
+    const appointment = await this.appointmentRepo.findOne({
+      where: { id: request.appointmentId },
+      relations: { doctor: true, patient: { user: true } },
+    });
+
+    if (!appointment) {
+      throw new NotFoundException('Appointment not found');
+    }
+
+    await this.performCheckIn(appointment);
+
+    return {
+      success: true,
+      message: 'Check-in approved. You are now in the queue.',
+    };
+  }
+
+  async rejectCheckInRequest(userId: string, requestId: string) {
+    const patient = await this.getPatientByUserId(userId);
+    const request = await this.getPendingRequestOrFail(requestId, patient.id);
+
+    request.status = CheckInRequestStatus.REJECTED;
+    request.respondedAt = new Date();
+    await this.checkInRequestRepo.save(request);
+
+    this.appointmentGateway?.emitCheckInRequest(patient.id, {
+      requestId: request.id,
+      appointmentId: request.appointmentId,
+      title: 'Check-in rejected',
+      message: 'You rejected the check-in request.',
+      expiresAt: request.expiresAt.toISOString(),
+    });
+
+    return {
+      success: true,
+      message: 'Check-in request rejected. No check-in was performed.',
+    };
+  }
+
+  private async getPendingRequestOrFail(requestId: string, patientId: string) {
+    const request = await this.checkInRequestRepo.findOne({
+      where: { id: requestId, patientId },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Check-in request not found');
+    }
+
+    if (request.status !== CheckInRequestStatus.PENDING) {
+      throw new BadRequestException('This check-in request is no longer pending');
+    }
+
+    if (request.expiresAt <= new Date()) {
+      request.status = CheckInRequestStatus.EXPIRED;
+      await this.checkInRequestRepo.save(request);
+      throw new BadRequestException('Check-in request has expired. Scan QR again at the kiosk.');
+    }
+
+    return request;
+  }
+
+  private async expireStaleRequests(patientId: string) {
+    await this.checkInRequestRepo.update(
+      {
+        patientId,
+        status: CheckInRequestStatus.PENDING,
+        expiresAt: LessThan(new Date()),
+      },
+      { status: CheckInRequestStatus.EXPIRED },
+    );
   }
 }

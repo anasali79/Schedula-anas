@@ -36,6 +36,8 @@ export const SOCKET_EVENTS = {
   COMPLETED: 'appointment.completed',
   CANCELLED: 'appointment.cancelled',
   NO_SHOW: 'appointment.no_show',
+  CHECK_IN_REQUEST: 'check_in.request',
+  CHECK_IN_REQUEST_RESPONDED: 'check_in.request_responded',
 } as const;
 
 export type SocketEventName = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];
@@ -217,5 +219,23 @@ export class AppointmentGateway
     const patientRoom = buildPatientRoom(patientId);
     this.logger.log(`[Emit] queue.position.updated → room [${patientRoom}]`);
     this.server.to(patientRoom).emit('queue.position.updated', payload);
+  }
+
+  emitCheckInRequest(
+    patientId: string,
+    payload: {
+      requestId: string;
+      appointmentId: string;
+      title: string;
+      message: string;
+      expiresAt: string;
+      doctorName?: string;
+      appointmentTime?: string;
+    },
+  ): void {
+    if (!this.server) return;
+    const patientRoom = buildPatientRoom(patientId);
+    this.logger.log(`[Emit] check_in.request → room [${patientRoom}]`);
+    this.server.to(patientRoom).emit(SOCKET_EVENTS.CHECK_IN_REQUEST, payload);
   }
 }

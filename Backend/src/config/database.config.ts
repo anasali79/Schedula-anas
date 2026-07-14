@@ -7,6 +7,8 @@ import { RecurringAvailability } from '../doctor/entities/recurring-availability
 import { CustomAvailability } from '../doctor/entities/custom-availability.entity';
 import { Appointment } from '../appointment/entities/appointment.entity';
 import { Notification } from '../notification/entities/notification.entity';
+import { DoctorLeave } from '../doctor/entities/leave.entity';
+import { CheckInRequest } from '../check-in/entities/check-in-request.entity';
 
 export function getDatabaseConfig(config: ConfigService): TypeOrmModuleOptions {
   const databaseUrl = config.get<string>('DATABASE_URL');
@@ -22,6 +24,8 @@ export function getDatabaseConfig(config: ConfigService): TypeOrmModuleOptions {
       CustomAvailability,
       Appointment,
       Notification,
+      DoctorLeave,
+      CheckInRequest,
     ],
     synchronize: false,
     migrations: [__dirname + '/../migrations/*.js'],

@@ -11,6 +11,9 @@ import { Appointment } from '../appointment/entities/appointment.entity';
 import { AppointmentModule } from '../appointment/appointment.module';
 import { User } from '../users/entities/user.entity';
 import { Patient } from '../patient/entities/patient.entity';
+import { DoctorLeave } from './entities/leave.entity';
+import { LeaveService } from './leave.service';
+import { LeaveController } from './leave.controller';
 
 @Module({
   imports: [
@@ -21,11 +24,12 @@ import { Patient } from '../patient/entities/patient.entity';
       Appointment,
       User,
       Patient,
+      DoctorLeave,
     ]),
     forwardRef(() => AppointmentModule),
   ],
-  controllers: [AvailabilityController, DoctorController],
-  providers: [DoctorService, AvailabilityService],
-  exports: [DoctorService, AvailabilityService],
+  controllers: [AvailabilityController, LeaveController, DoctorController],
+  providers: [DoctorService, AvailabilityService, LeaveService],
+  exports: [DoctorService, AvailabilityService, LeaveService],
 })
 export class DoctorModule { }
