@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getErrorMessage } from '../../context/AuthContext';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuth, getErrorMessage } from '../../context/AuthContext';
 import { createPatientProfile } from '../../api/patient';
 import { AppLayout } from '../../components/layout/AppLayout';
 import { Alert } from '../../components/ui/Alert';
@@ -11,6 +12,8 @@ import { Select } from '../../components/ui/Select';
 
 export function PatientProfileSetupPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [fullName, setFullName] = useState('');
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('MALE');
@@ -37,6 +40,7 @@ export function PatientProfileSetupPage() {
         address: address || undefined,
         basicHealthInfo: basicHealthInfo || undefined,
       });
+      await queryClient.invalidateQueries({ queryKey: ['patient-profile', user?.id] });
       navigate('/patient');
     } catch (err) {
       setError(getErrorMessage(err));

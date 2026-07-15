@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getErrorMessage } from '../../context/AuthContext';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuth, getErrorMessage } from '../../context/AuthContext';
 import { createDoctorProfile } from '../../api/doctor';
 import { AppLayout } from '../../components/layout/AppLayout';
 import { Alert } from '../../components/ui/Alert';
@@ -24,6 +25,8 @@ const SPECIALIZATIONS = [
 
 export function DoctorProfileSetupPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [fullName, setFullName] = useState('');
   const [specialization, setSpecialization] = useState(SPECIALIZATIONS[0]);
   const [experience, setExperience] = useState('');
@@ -50,6 +53,7 @@ export function DoctorProfileSetupPage() {
         consultationFee: parseFloat(consultationFee),
         profileDetails: profileDetails || undefined,
       });
+      await queryClient.invalidateQueries({ queryKey: ['doctor-profile', user?.id] });
       navigate('/doctor');
     } catch (err) {
       setError(getErrorMessage(err));
