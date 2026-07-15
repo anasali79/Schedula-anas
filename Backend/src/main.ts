@@ -24,8 +24,19 @@ async function bootstrap() {
   // Global exception filter — consistent JSON error responses, no server crashes
   app.useGlobalFilters(new GlobalExceptionFilter());
 
+  const allowedOrigins = (
+    process.env.CLIENT_URL || 'http://localhost:5173'
+  ).split(',').map(o => o.trim());
+
   app.enableCors({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, curl, Postman)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS: Origin ${origin} not allowed`), false);
+    },
     credentials: true,
   });
 
