@@ -9,14 +9,22 @@ export const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('schedula_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 export function getErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const axiosError = error as AxiosError<ApiError>;
     if (!axiosError.response) {
-      return 'Cannot reach server. Make sure Backend is running on port 3000 (npm run start:dev).';
+      return 'Backend server is currently undergoing maintenance. Please try again later.';
     }
     if (axiosError.response.status === 502) {
-      return 'Backend unavailable (502). Start the Backend server: cd Backend && npm run start:dev';
+      return 'Backend server is currently undergoing maintenance. Please try again later.';
     }
     const message = axiosError.response?.data?.message;
     if (Array.isArray(message)) return message.join(', ');
@@ -24,5 +32,5 @@ export function getErrorMessage(error: unknown): string {
     return axiosError.message;
   }
   if (error instanceof Error) return error.message;
-  return 'Something went wrong';
+  return 'Backend server is currently undergoing maintenance. Please try again later.';
 }

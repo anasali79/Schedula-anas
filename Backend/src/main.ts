@@ -25,7 +25,7 @@ async function bootstrap() {
   app.useGlobalFilters(new GlobalExceptionFilter());
 
   const allowedOrigins = (
-    process.env.CLIENT_URL || 'http://localhost:5173'
+    process.env.CLIENT_URL || 'http://localhost:5173,https://schedula-anas.vercel.app'
   ).split(',').map(o => o.trim());
 
   app.enableCors({

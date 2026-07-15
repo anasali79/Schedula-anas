@@ -23,17 +23,19 @@ export class AuthController {
   async signup(@Body() signupDto: SignupDto, @Res() res: Response) {
     const result = await this.authService.signup(signupDto);
 
+    const isProd = process.env.NODE_ENV === 'production';
     // Save JWT in HTTP-only cookie
     res.cookie('token', result.token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     return res.status(HttpStatus.CREATED).json({
       message: result.message,
       user: result.user,
+      token: result.token,
     });
   }
 
@@ -42,25 +44,32 @@ export class AuthController {
   async login(@Body() loginDto: LoginDto, @Res() res: Response) {
     const result = await this.authService.login(loginDto);
 
+    const isProd = process.env.NODE_ENV === 'production';
     // Save JWT in HTTP-only cookie
     res.cookie('token', result.token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     return res.status(HttpStatus.OK).json({
       message: result.message,
       user: result.user,
+      token: result.token,
     });
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Res() res: Response) {
+    const isProd = process.env.NODE_ENV === 'production';
     // Clear the token cookie
-    res.clearCookie('token');
+    res.clearCookie('token', {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+    });
     return res
       .status(HttpStatus.OK)
       .json({ message: 'Logged out successfully' });
