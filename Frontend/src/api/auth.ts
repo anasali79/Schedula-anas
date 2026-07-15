@@ -14,7 +14,7 @@ export interface LoginPayload {
 }
 
 export async function signup(payload: SignupPayload) {
-  const { data } = await api.post<{ message: string; user: User }>(
+  const { data } = await api.post<{ message: string; user: User; token?: string }>(
     '/auth/signup',
     payload,
   );
@@ -22,7 +22,7 @@ export async function signup(payload: SignupPayload) {
 }
 
 export async function login(payload: LoginPayload) {
-  const { data } = await api.post<{ message: string; user: User }>(
+  const { data } = await api.post<{ message: string; user: User; token?: string }>(
     '/auth/login',
     payload,
   );

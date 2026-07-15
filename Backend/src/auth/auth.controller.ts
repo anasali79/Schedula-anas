@@ -35,6 +35,7 @@ export class AuthController {
     return res.status(HttpStatus.CREATED).json({
       message: result.message,
       user: result.user,
+      token: result.token,
     });
   }
 
@@ -55,6 +56,7 @@ export class AuthController {
     return res.status(HttpStatus.OK).json({
       message: result.message,
       user: result.user,
+      token: result.token,
     });
   }
 

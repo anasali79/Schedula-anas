@@ -7,8 +7,9 @@ import { ConfigService } from '@nestjs/config';
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(private configService: ConfigService) {
     super({
-      // Extract JWT from the 'token' cookie instead of Authorization header
+      // Extract JWT from either Authorization header or 'token' cookie
       jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
         (request: any) => {
           return request?.cookies?.token ?? null;
         },

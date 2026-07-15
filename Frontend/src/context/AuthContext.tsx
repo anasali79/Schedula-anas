@@ -46,6 +46,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await authApi.login({ email, password });
+    if (result.token) {
+      localStorage.setItem('schedula_token', result.token);
+    }
     setUser(result.user);
     return result.user;
   }, []);
@@ -53,6 +56,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signup = useCallback(
     async (name: string, email: string, password: string, role: Role) => {
       const result = await authApi.signup({ name, email, password, role });
+      if (result.token) {
+        localStorage.setItem('schedula_token', result.token);
+      }
       setUser(result.user);
       return result.user;
     },
@@ -63,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await authApi.logout();
     } finally {
+      localStorage.removeItem('schedula_token');
       setUser(null);
       import('../App').then(({ queryClient }) => {
         queryClient.clear();
